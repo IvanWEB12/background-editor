@@ -1,4 +1,10 @@
-# редактор_фона.py - ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ v5.0
+# редактор_фона.py - Редактор фона 1.0
+"""
+Редактор фона 1.0 - Универсальный редактор изображений
+Разработан: DeepSeek
+Версия: 1.0
+"""
+
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, colorchooser, scrolledtext, simpledialog
 from PIL import Image, ImageTk, ImageFilter, ImageEnhance, ImageOps, ImageDraw
@@ -6,15 +12,15 @@ import os
 import json
 import copy
 import threading
-import queue
 import time
 import sys
 import subprocess
 import tempfile
 import shutil
+import zipfile
 from datetime import datetime
-import math
 import random
+import webbrowser
 
 # === ПРОВЕРКА БИБЛИОТЕК ===
 try:
@@ -31,7 +37,7 @@ except ImportError:
     HAS_CV2 = False
 
 try:
-    from skimage import exposure, filters, measure
+    from skimage import exposure
     HAS_SKIMAGE = True
 except ImportError:
     HAS_SKIMAGE = False
@@ -56,9 +62,14 @@ except ImportError:
 
 HAS_AI = HAS_CV2 and HAS_SKIMAGE and HAS_REMBG
 
+# === ВЕРСИЯ ПРОГРАММЫ ===
+VERSION = "1.0"
+PROGRAM_NAME = "Редактор фона"
+PROGRAM_NAME_EN = "Background Editor"
+
 # === КЛАСС АВТООБНОВЛЕНИЯ ===
 class Updater:
-    def __init__(self, current_version="5.0"):
+    def __init__(self, current_version=VERSION):
         self.version = current_version
         self.update_url = "https://raw.githubusercontent.com/ваш_логин/редактор_фона/main/version.json"
         self.download_url = "https://raw.githubusercontent.com/ваш_логин/редактор_фона/main/Редактор_фона.exe"
@@ -81,20 +92,9 @@ class Updater:
                 if latest_version > self.version:
                     return True, latest_version, download_url
                 return False, None, None
-            
-            response = requests.get(self.update_url, timeout=5)
-            if response.status_code == 200:
-                data = response.json()
-                latest_version = data.get('version', '0.0')
-                download_url = data.get('download_url', '')
-                
-                if latest_version > self.version:
-                    return True, latest_version, download_url
-                return False, None, None
-            
-            return False, None, "Не удалось проверить обновления"
-        except Exception as e:
-            return False, None, f"Ошибка: {str(e)}"
+        except:
+            return False, None, None
+        return False, None, None
     
     def download_update(self, url=None):
         if not HAS_REQUESTS:
@@ -102,15 +102,6 @@ class Updater:
         
         try:
             download_url = url or self.download_url
-            
-            if download_url.startswith('file://'):
-                local_path = download_url.replace('file://', '')
-                if os.path.exists(local_path):
-                    temp_path = os.path.join(tempfile.gettempdir(), "Редактор_фона_new.exe")
-                    shutil.copy2(local_path, temp_path)
-                    return temp_path, None
-                return None, "Локальный файл не найден"
-            
             response = requests.get(download_url, stream=True, timeout=30)
             
             if response.status_code != 200:
@@ -132,9 +123,6 @@ class Updater:
             return False, "Файл не найден"
         
         current_exe = sys.executable
-        
-        if os.path.samefile(new_exe_path, current_exe):
-            return False, "Файл совпадает с текущим"
         
         try:
             bat_content = f"""@echo off
@@ -162,37 +150,28 @@ exit
             return False, f"Ошибка: {str(e)}"
 
 
-# === ОСНОВНАЯ ПРОГРАММА ===
-class BackgroundEditorUltimate:
+# === КЛАСС ПРОГРАММЫ ===
+class BackgroundEditor:
     def __init__(self, root):
         self.root = root
-        self.root.title("🎨 Редактор Фона Ultimate v5.0")
+        self.root.title(f"{PROGRAM_NAME} v{VERSION}")
         self.root.geometry("1600x1000")
         self.root.minsize(1200, 700)
         
-        # === ВЕРСИЯ ===
-        self.version = "5.0"
+        # === ПЕРЕМЕННЫЕ ===
+        self.version = VERSION
+        self.program_name = PROGRAM_NAME
+        self.current_language = 'ru'
         self.updater = Updater(self.version)
         
-        # === ОСНОВНЫЕ ПЕРЕМЕННЫЕ ===
-        self.current_language = 'ru'
+        # Пути
         self.project_path = None
         self.project_folder = None
-        self.zoom_level = 1.0
-        self.pan_x = 0
-        self.pan_y = 0
-        self.is_batch_mode = False
-        self.batch_target_var = tk.StringVar(value="all")
-        self.grid_visible = False
-        self.rules_visible = False
-        self.auto_save_enabled = True
-        self.auto_save_interval = 300
-        self.last_auto_save = time.time()
-        self.resize_handles_var = tk.BooleanVar(value=True)
-        self.dark_mode = tk.BooleanVar(value=True)
-        self.show_tooltips = tk.BooleanVar(value=True)
         
-        # === ДАННЫЕ ПРОЕКТА ===
+        # Масштаб
+        self.zoom_level = 1.0
+        
+        # Данные проекта
         self.backgrounds = []
         self.current_background = None
         self.current_bg_index = 0
@@ -202,52 +181,72 @@ class BackgroundEditorUltimate:
         self.current_layer_index = 0
         self.recent_projects = []
         self.max_recent = 10
-        self.clipboard = []
         self.clipboard_objects = []
         
-        # === ИСТОРИЯ ===
+        # История
         self.history = []
         self.history_index = -1
         self.max_history = 100
         
-        # === ПАКЕТНАЯ ОБРАБОТКА ===
+        # Пакетная обработка
         self.batch_templates = {}
         self.batch_operations = []
+        self.batch_target_var = tk.StringVar(value="all")
         
-        # === ЭКСПОРТ ===
-        self.export_formats = ['PNG', 'JPG', 'BMP', 'WEBP', 'PDF', 'PSD']
-        if HAS_SVG:
-            self.export_formats.append('SVG')
-        self.export_quality = 90
-        
-        # === ПРЕСЕТЫ ===
-        self.custom_presets = {}
-        
-        # === НАСТРОЙКИ ===
+        # Настройки
         self.config = {
             'auto_save': True,
             'confirm_delete': True,
             'theme': 'dark',
             'language': 'ru',
             'check_updates': True,
-            'quality': 90,
-            'last_update_check': 0
+            'windows_style': 'Windows 10',
+            'interface_style': 'Классический',
+            'quality': 90
         }
         
-        # === КЭШ ===
+        # Переменные интерфейса
+        self.grid_visible = False
+        self.rules_visible = False
+        self.auto_save_enabled = True
+        self.auto_save_interval = 300
+        self.resize_handles_var = tk.BooleanVar(value=True)
+        
+        # Экспорт
+        self.export_formats = ['PNG', 'JPG', 'BMP', 'WEBP', 'PDF', 'PSD']
+        if HAS_SVG:
+            self.export_formats.append('SVG')
+        self.export_quality = 90
+        self.export_as_zip = False
+        
+        # Пресеты
+        self.custom_presets = {}
+        self.interface_presets = {}
+        self.interface_custom_settings = {}
+        
+        # Кэш
         self.preview_cache = None
         self.preview_cache_time = 0
-        self.cache_duration = 0.3
         
-        # === ПРОВЕРКА БИБЛИОТЕК ===
-        self.check_libraries()
+        # Статус библиотек
+        self.has_cv2 = HAS_CV2
+        self.has_skimage = HAS_SKIMAGE
+        self.has_rembg = HAS_REMBG
+        self.has_sklearn = HAS_SKLEARN
+        self.has_ai = HAS_AI
+        self.has_requests = HAS_REQUESTS
+        self.has_svg = HAS_SVG
         
         # === СОЗДАНИЕ ИНТЕРФЕЙСА ===
+        self.setup_languages()
+        self.setup_interface_presets()
         self.setup_ui()
         self.setup_menu()
         self.setup_hotkeys()
-        self.setup_tooltips()
+        self.setup_context_menu()
         self.apply_theme()
+        self.apply_windows_style()
+        self.apply_interface_style()
         self.load_recent_projects()
         self.start_auto_save()
         self.setup_drag_drop()
@@ -259,24 +258,281 @@ class BackgroundEditorUltimate:
         # === СТАТУС ===
         self.update_status()
     
-    def check_libraries(self):
-        self.has_cv2 = HAS_CV2
-        self.has_skimage = HAS_SKIMAGE
-        self.has_rembg = HAS_REMBG
-        self.has_sklearn = HAS_SKLEARN
-        self.has_ai = HAS_AI
-        self.has_requests = HAS_REQUESTS
-        self.has_svg = HAS_SVG
+    def setup_languages(self):
+        """Настройка языков"""
+        self.languages = {
+            'ru': {
+                'program_name': 'Редактор фона',
+                'file': 'Файл',
+                'edit': 'Правка',
+                'view': 'Вид',
+                'settings': 'Настройки',
+                'help': 'Помощь',
+                'new': 'Новый проект',
+                'open': 'Открыть проект',
+                'save': 'Сохранить проект',
+                'save_as': 'Сохранить как',
+                'export': 'Экспорт',
+                'import': 'Импорт',
+                'exit': 'Выход',
+                'undo': 'Отмена',
+                'redo': 'Повтор',
+                'cut': 'Вырезать',
+                'copy': 'Копировать',
+                'paste': 'Вставить',
+                'select_all': 'Выделить всё',
+                'deselect': 'Снять выделение',
+                'zoom_in': 'Увеличить',
+                'zoom_out': 'Уменьшить',
+                'reset_view': 'Сбросить вид',
+                'grid': 'Сетка',
+                'rules': 'Правило третей',
+                'resize_handles': 'Маркеры ресайза',
+                'check_updates': 'Проверить обновления',
+                'about': 'О программе',
+                'help_text': 'Справка',
+                'hotkeys': 'Горячие клавиши',
+                'add_background': 'Добавить фон',
+                'add_objects': 'Добавить объекты',
+                'background': 'Фон',
+                'objects': 'Объекты',
+                'layers': 'Слои',
+                'filters': 'Фильтры',
+                'presets': 'Пресеты',
+                'batch': 'Пакетная обработка',
+                'analysis': 'Анализ',
+                'history': 'История',
+                'settings_tab': 'Настройки',
+                'tools': 'Инструменты',
+                'properties': 'Свойства',
+                'position': 'Позиция',
+                'size': 'Размер',
+                'rotation': 'Поворот',
+                'opacity': 'Прозрачность',
+                'mirror': 'Отражение',
+                'remove_background': 'Удаление фона',
+                'ai_remove': 'ИИ удаление фона',
+                'color_remove': 'По цвету',
+                'edges_remove': 'Обрезка краёв',
+                'duplicate': 'Дублировать',
+                'delete': 'Удалить',
+                'align': 'Выровнять',
+                'resize': 'Изменить размер',
+                'reset': 'Сброс',
+                'save_as_zip': 'Сохранить как ZIP-файл',
+                'windows_style': 'Стиль Windows',
+                'interface_style': 'Стиль интерфейса',
+                'language': 'Язык',
+                'theme': 'Тема',
+                'dark': 'Тёмная',
+                'light': 'Светлая',
+                'auto_save': 'Автосохранение',
+                'confirm_delete': 'Подтверждение удаления',
+                'classic': 'Классический',
+                'modern': 'Современный',
+                'minimal': 'Минималистичный',
+                'dark_theme': 'Тёмная тема',
+                'light_theme': 'Светлая тема',
+                'blue': 'Синий',
+                'green': 'Зелёный',
+                'purple': 'Фиолетовый',
+                'orange': 'Оранжевый',
+                'red': 'Красный',
+                'custom': 'Пользовательский'
+            },
+            'en': {
+                'program_name': 'Background Editor',
+                'file': 'File',
+                'edit': 'Edit',
+                'view': 'View',
+                'settings': 'Settings',
+                'help': 'Help',
+                'new': 'New Project',
+                'open': 'Open Project',
+                'save': 'Save Project',
+                'save_as': 'Save As',
+                'export': 'Export',
+                'import': 'Import',
+                'exit': 'Exit',
+                'undo': 'Undo',
+                'redo': 'Redo',
+                'cut': 'Cut',
+                'copy': 'Copy',
+                'paste': 'Paste',
+                'select_all': 'Select All',
+                'deselect': 'Deselect',
+                'zoom_in': 'Zoom In',
+                'zoom_out': 'Zoom Out',
+                'reset_view': 'Reset View',
+                'grid': 'Grid',
+                'rules': 'Rule of Thirds',
+                'resize_handles': 'Resize Handles',
+                'check_updates': 'Check for Updates',
+                'about': 'About',
+                'help_text': 'Help',
+                'hotkeys': 'Hotkeys',
+                'add_background': 'Add Background',
+                'add_objects': 'Add Objects',
+                'background': 'Background',
+                'objects': 'Objects',
+                'layers': 'Layers',
+                'filters': 'Filters',
+                'presets': 'Presets',
+                'batch': 'Batch Processing',
+                'analysis': 'Analysis',
+                'history': 'History',
+                'settings_tab': 'Settings',
+                'tools': 'Tools',
+                'properties': 'Properties',
+                'position': 'Position',
+                'size': 'Size',
+                'rotation': 'Rotation',
+                'opacity': 'Opacity',
+                'mirror': 'Mirror',
+                'remove_background': 'Remove Background',
+                'ai_remove': 'AI Remove',
+                'color_remove': 'By Color',
+                'edges_remove': 'Crop Edges',
+                'duplicate': 'Duplicate',
+                'delete': 'Delete',
+                'align': 'Align',
+                'resize': 'Resize',
+                'reset': 'Reset',
+                'save_as_zip': 'Save as ZIP',
+                'windows_style': 'Windows Style',
+                'interface_style': 'Interface Style',
+                'language': 'Language',
+                'theme': 'Theme',
+                'dark': 'Dark',
+                'light': 'Light',
+                'auto_save': 'Auto Save',
+                'confirm_delete': 'Confirm Delete',
+                'classic': 'Classic',
+                'modern': 'Modern',
+                'minimal': 'Minimal',
+                'dark_theme': 'Dark Theme',
+                'light_theme': 'Light Theme',
+                'blue': 'Blue',
+                'green': 'Green',
+                'purple': 'Purple',
+                'orange': 'Orange',
+                'red': 'Red',
+                'custom': 'Custom'
+            }
+        }
     
-    def update_status(self):
-        status = "✅ Готов к работе"
-        if self.has_ai:
-            status += " | 🤖 ИИ доступен"
-        else:
-            status += " | ⚠️ ИИ не доступен"
-        if self.has_svg:
-            status += " | 📤 SVG доступен"
-        self.info_label.config(text=status)
+    def setup_interface_presets(self):
+        """Настройка предустановленных стилей интерфейса"""
+        self.interface_presets = {
+            'Классический': {
+                'bg_color': '#2b2b2b',
+                'fg_color': '#ffffff',
+                'button_color': '#3b3b3b',
+                'font_family': 'Segoe UI',
+                'font_size': 9,
+                'padding': 5,
+                'border_radius': 0
+            },
+            'Современный': {
+                'bg_color': '#1a1a2e',
+                'fg_color': '#e0e0e0',
+                'button_color': '#16213e',
+                'font_family': 'Segoe UI',
+                'font_size': 10,
+                'padding': 8,
+                'border_radius': 8
+            },
+            'Минималистичный': {
+                'bg_color': '#f5f5f5',
+                'fg_color': '#333333',
+                'button_color': '#e8e8e8',
+                'font_family': 'Arial',
+                'font_size': 9,
+                'padding': 4,
+                'border_radius': 0
+            },
+            'Тёмная тема': {
+                'bg_color': '#0d0d0d',
+                'fg_color': '#f0f0f0',
+                'button_color': '#1a1a1a',
+                'font_family': 'Segoe UI',
+                'font_size': 10,
+                'padding': 6,
+                'border_radius': 4
+            },
+            'Светлая тема': {
+                'bg_color': '#f0f0f0',
+                'fg_color': '#222222',
+                'button_color': '#e0e0e0',
+                'font_family': 'Arial',
+                'font_size': 9,
+                'padding': 5,
+                'border_radius': 0
+            },
+            'Синяя тема': {
+                'bg_color': '#0a1628',
+                'fg_color': '#b8d4ff',
+                'button_color': '#1a2d4a',
+                'font_family': 'Segoe UI',
+                'font_size': 10,
+                'padding': 6,
+                'border_radius': 4
+            },
+            'Зелёная тема': {
+                'bg_color': '#0a1a0a',
+                'fg_color': '#b8ffb8',
+                'button_color': '#1a2a1a',
+                'font_family': 'Segoe UI',
+                'font_size': 10,
+                'padding': 6,
+                'border_radius': 4
+            },
+            'Фиолетовая тема': {
+                'bg_color': '#1a0a2a',
+                'fg_color': '#d4b8ff',
+                'button_color': '#2a1a3a',
+                'font_family': 'Segoe UI',
+                'font_size': 10,
+                'padding': 6,
+                'border_radius': 4
+            },
+            'Оранжевая тема': {
+                'bg_color': '#2a1a0a',
+                'fg_color': '#ffd4b8',
+                'button_color': '#3a2a1a',
+                'font_family': 'Segoe UI',
+                'font_size': 10,
+                'padding': 6,
+                'border_radius': 4
+            },
+            'Красная тема': {
+                'bg_color': '#2a0a0a',
+                'fg_color': '#ffb8b8',
+                'button_color': '#3a1a1a',
+                'font_family': 'Segoe UI',
+                'font_size': 10,
+                'padding': 6,
+                'border_radius': 4
+            }
+        }
+        
+        # Пользовательские настройки
+        self.interface_custom_settings = {
+            'bg_color': '#2b2b2b',
+            'fg_color': '#ffffff',
+            'button_color': '#3b3b3b',
+            'font_family': 'Segoe UI',
+            'font_size': 9,
+            'padding': 5,
+            'border_radius': 0
+        }
+    
+    def get_text(self, key):
+        """Получение текста на текущем языке"""
+        lang = self.current_language
+        if lang in self.languages and key in self.languages[lang]:
+            return self.languages[lang][key]
+        return key
     
     def setup_ui(self):
         """Создание интерфейса"""
@@ -314,13 +570,17 @@ class BackgroundEditorUltimate:
     def setup_tools_tab(self, notebook):
         """Вкладка Инструменты"""
         tab = ttk.Frame(notebook)
-        notebook.add(tab, text="🔧 Инструменты")
+        notebook.add(tab, text="🔧 " + self.get_text('tools'))
         
         # === ФОН ===
-        bg_frame = ttk.LabelFrame(tab, text="📁 Фон")
+        bg_frame = ttk.LabelFrame(tab, text=self.get_text('background'))
         bg_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        ttk.Button(bg_frame, text="📂 Добавить фон", command=self.add_background).pack(fill=tk.X, pady=2)
+        ttk.Button(bg_frame, text="📂 " + self.get_text('add_background'), 
+                  command=self.add_background).pack(fill=tk.X, pady=2)
+        ttk.Button(bg_frame, text="📦 " + self.get_text('add_objects') + " (пакетно)", 
+                  command=self.add_objects_batch).pack(fill=tk.X, pady=2)
+        
         btn_frame = ttk.Frame(bg_frame)
         btn_frame.pack(fill=tk.X, pady=2)
         ttk.Button(btn_frame, text="◄", command=self.prev_background, width=5).pack(side=tk.LEFT, padx=2)
@@ -328,51 +588,62 @@ class BackgroundEditorUltimate:
         ttk.Button(btn_frame, text="🎲", command=self.random_background, width=5).pack(side=tk.LEFT, padx=2)
         
         # === УДАЛЕНИЕ ФОНА ===
-        remove_frame = ttk.LabelFrame(tab, text="🧹 Удаление фона")
+        remove_frame = ttk.LabelFrame(tab, text=self.get_text('remove_background'))
         remove_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        ttk.Button(remove_frame, text="🎯 По цвету", command=self.remove_by_color).pack(fill=tk.X, pady=2)
-        ttk.Button(remove_frame, text="🤖 ИИ удаление", command=self.remove_ai).pack(fill=tk.X, pady=2)
-        ttk.Button(remove_frame, text="✂️ Обрезка краёв", command=self.remove_edges).pack(fill=tk.X, pady=2)
+        ttk.Button(remove_frame, text="🎯 " + self.get_text('color_remove'), 
+                  command=self.remove_by_color).pack(fill=tk.X, pady=2)
+        ttk.Button(remove_frame, text="🤖 " + self.get_text('ai_remove'), 
+                  command=self.remove_ai).pack(fill=tk.X, pady=2)
+        ttk.Button(remove_frame, text="✂️ " + self.get_text('edges_remove'), 
+                  command=self.remove_edges).pack(fill=tk.X, pady=2)
         
         # === ОБЪЕКТЫ ===
-        obj_frame = ttk.LabelFrame(tab, text="📦 Объекты")
+        obj_frame = ttk.LabelFrame(tab, text=self.get_text('objects'))
         obj_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        ttk.Button(obj_frame, text="➕ Добавить", command=self.add_object).pack(fill=tk.X, pady=2)
-        ttk.Button(obj_frame, text="📋 Дублировать", command=self.duplicate_objects).pack(fill=tk.X, pady=2)
-        ttk.Button(obj_frame, text="🗑 Удалить", command=self.delete_objects).pack(fill=tk.X, pady=2)
-        ttk.Button(obj_frame, text="🔀 Выровнять", command=self.align_objects).pack(fill=tk.X, pady=2)
-        ttk.Button(obj_frame, text="📐 Изменить размер", command=self.resize_dialog).pack(fill=tk.X, pady=2)
+        ttk.Button(obj_frame, text="➕ " + self.get_text('add_objects'), 
+                  command=self.add_object).pack(fill=tk.X, pady=2)
+        ttk.Button(obj_frame, text="📦 " + self.get_text('add_objects') + " (пакетно)", 
+                  command=self.add_objects_batch).pack(fill=tk.X, pady=2)
+        ttk.Button(obj_frame, text="📋 " + self.get_text('duplicate'), 
+                  command=self.duplicate_objects).pack(fill=tk.X, pady=2)
+        ttk.Button(obj_frame, text="🗑 " + self.get_text('delete'), 
+                  command=self.delete_objects).pack(fill=tk.X, pady=2)
+        ttk.Button(obj_frame, text="🔀 " + self.get_text('align'), 
+                  command=self.align_objects).pack(fill=tk.X, pady=2)
+        ttk.Button(obj_frame, text="📐 " + self.get_text('resize'), 
+                  command=self.resize_dialog).pack(fill=tk.X, pady=2)
         
         # === ДЕЙСТВИЯ ===
-        action_frame = ttk.LabelFrame(tab, text="⚡ Действия")
+        action_frame = ttk.LabelFrame(tab, text="⚡ " + self.get_text('edit'))
         action_frame.pack(fill=tk.X, padx=5, pady=5)
         
         action_btns = ttk.Frame(action_frame)
         action_btns.pack(fill=tk.X, pady=2)
-        ttk.Button(action_btns, text="↩ Отмена", command=self.undo, width=10).pack(side=tk.LEFT, padx=2)
-        ttk.Button(action_btns, text="↪ Повтор", command=self.redo, width=10).pack(side=tk.LEFT, padx=2)
-        ttk.Button(action_btns, text="⟳ Сброс", command=self.reset, width=10).pack(side=tk.LEFT, padx=2)
+        ttk.Button(action_btns, text="↩ " + self.get_text('undo'), 
+                  command=self.undo, width=10).pack(side=tk.LEFT, padx=2)
+        ttk.Button(action_btns, text="↪ " + self.get_text('redo'), 
+                  command=self.redo, width=10).pack(side=tk.LEFT, padx=2)
+        ttk.Button(action_btns, text="⟳ " + self.get_text('reset'), 
+                  command=self.reset, width=10).pack(side=tk.LEFT, padx=2)
         
         # === МАРКЕРЫ ===
-        resize_frame = ttk.LabelFrame(tab, text="📐 Ресайз маркеры")
+        resize_frame = ttk.LabelFrame(tab, text="📐 " + self.get_text('resize_handles'))
         resize_frame.pack(fill=tk.X, padx=5, pady=5)
-        ttk.Checkbutton(resize_frame, text="Показывать маркеры", 
+        ttk.Checkbutton(resize_frame, text=self.get_text('resize_handles'), 
                        variable=self.resize_handles_var,
                        command=self.update_preview).pack(fill=tk.X, pady=2)
     
     def setup_layers_tab(self, notebook):
         """Вкладка Слои"""
         tab = ttk.Frame(notebook)
-        notebook.add(tab, text="📚 Слои")
+        notebook.add(tab, text="📚 " + self.get_text('layers'))
         
-        # Список слоёв
         self.layer_listbox = tk.Listbox(tab, height=14, selectmode=tk.SINGLE)
         self.layer_listbox.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.layer_listbox.bind('<<ListboxSelect>>', self.on_layer_select)
         
-        # Кнопки управления
         layer_btns = ttk.Frame(tab)
         layer_btns.pack(fill=tk.X, padx=5, pady=2)
         ttk.Button(layer_btns, text="➕ Новый", command=self.add_layer).pack(side=tk.LEFT, padx=2)
@@ -381,32 +652,20 @@ class BackgroundEditorUltimate:
         ttk.Button(layer_btns, text="⬇", command=self.layer_down, width=3).pack(side=tk.LEFT, padx=2)
         ttk.Button(layer_btns, text="🔗", command=self.merge_layers, width=3).pack(side=tk.LEFT, padx=2)
         
-        # Настройки слоя
-        settings_frame = ttk.LabelFrame(tab, text="⚙️ Настройки слоя")
+        settings_frame = ttk.LabelFrame(tab, text="⚙️ " + self.get_text('settings'))
         settings_frame.pack(fill=tk.X, padx=5, pady=5)
         
         self.layer_name_entry = ttk.Entry(settings_frame)
         self.layer_name_entry.pack(fill=tk.X, padx=5, pady=2)
         ttk.Button(settings_frame, text="Переименовать", command=self.rename_layer).pack(fill=tk.X, padx=5, pady=2)
         
-        ttk.Label(settings_frame, text="Прозрачность:").pack(anchor=tk.W, padx=5)
+        ttk.Label(settings_frame, text=self.get_text('opacity') + ":").pack(anchor=tk.W, padx=5)
         self.layer_opacity_scale = ttk.Scale(settings_frame, from_=0, to=100, orient=tk.HORIZONTAL,
                                             command=self.change_layer_opacity)
         self.layer_opacity_scale.pack(fill=tk.X, padx=5, pady=2)
         self.layer_opacity_label = ttk.Label(settings_frame, text="100%")
         self.layer_opacity_label.pack(pady=2)
         
-        # Режим наложения
-        ttk.Label(settings_frame, text="Режим наложения:").pack(anchor=tk.W, padx=5)
-        blend_modes = ['normal', 'multiply', 'screen', 'overlay', 'soft_light', 
-                      'hard_light', 'difference', 'exclusion', 'color_dodge', 'color_burn']
-        self.blend_mode_var = tk.StringVar(value="normal")
-        self.blend_combo = ttk.Combobox(settings_frame, textvariable=self.blend_mode_var,
-                                        values=blend_modes, state='readonly')
-        self.blend_combo.pack(fill=tk.X, padx=5, pady=2)
-        self.blend_combo.bind('<<ComboboxSelected>>', self.change_blend_mode)
-        
-        # Видимость
         self.layer_visible_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(settings_frame, text="👁 Видимый", 
                        variable=self.layer_visible_var,
@@ -415,12 +674,12 @@ class BackgroundEditorUltimate:
     def setup_filters_tab(self, notebook):
         """Вкладка Фильтры"""
         tab = ttk.Frame(notebook)
-        notebook.add(tab, text="🎨 Фильтры")
+        notebook.add(tab, text="🎨 " + self.get_text('filters'))
         
         filter_notebook = ttk.Notebook(tab)
         filter_notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        # === РАЗМЫТИЕ ===
+        # Размытие
         blur_tab = ttk.Frame(filter_notebook)
         filter_notebook.add(blur_tab, text="Размытие")
         
@@ -431,11 +690,10 @@ class BackgroundEditorUltimate:
         ttk.Button(blur_tab, text="Применить", 
                   command=lambda: self.apply_filter('gaussian_blur', self.blur_scale.get())).pack(pady=5)
         
-        for text, cmd in [("Сглаживание", 'smooth'), ("Резкость", 'sharpen'), 
-                         ("Тиснение", 'emboss'), ("Размытие по краям", 'edge_blur')]:
+        for text, cmd in [("Сглаживание", 'smooth'), ("Резкость", 'sharpen'), ("Тиснение", 'emboss')]:
             ttk.Button(blur_tab, text=text, command=lambda c=cmd: self.apply_filter(c)).pack(fill=tk.X, pady=2)
         
-        # === КОРРЕКЦИЯ ===
+        # Коррекция
         corr_tab = ttk.Frame(filter_notebook)
         filter_notebook.add(corr_tab, text="Коррекция")
         
@@ -456,7 +714,7 @@ class BackgroundEditorUltimate:
         
         ttk.Button(corr_tab, text="Применить коррекцию", command=self.apply_correction).pack(pady=5)
         
-        # === ЭФФЕКТЫ ===
+        # Эффекты
         eff_tab = ttk.Frame(filter_notebook)
         filter_notebook.add(eff_tab, text="Эффекты")
         
@@ -464,20 +722,11 @@ class BackgroundEditorUltimate:
                          ("Постеризация", 'posterize'), ("Соляризация", 'solarize'),
                          ("Виньетка", 'vignette'), ("Пикселизация", 'pixelate')]:
             ttk.Button(eff_tab, text=text, command=lambda c=cmd: self.apply_effect(c)).pack(fill=tk.X, pady=2)
-        
-        # === СПЕЦИАЛЬНЫЕ ===
-        spec_tab = ttk.Frame(filter_notebook)
-        filter_notebook.add(spec_tab, text="Специальные")
-        
-        ttk.Button(spec_tab, text="🔍 Автоконтраст", command=lambda: self.apply_auto('autocontrast')).pack(fill=tk.X, pady=2)
-        ttk.Button(spec_tab, text="⚖️ Баланс белого", command=lambda: self.apply_auto('white_balance')).pack(fill=tk.X, pady=2)
-        ttk.Button(spec_tab, text="✨ Улучшение деталей", command=lambda: self.apply_auto('detail_enhance')).pack(fill=tk.X, pady=2)
-        ttk.Button(spec_tab, text="🧹 Шумоподавление", command=lambda: self.apply_auto('denoise')).pack(fill=tk.X, pady=2)
     
     def setup_presets_tab(self, notebook):
-        """Вкладка Пресеты - ИСПРАВЛЕННАЯ"""
+        """Вкладка Пресеты"""
         tab = ttk.Frame(notebook)
-        notebook.add(tab, text="⚡ Пресеты")
+        notebook.add(tab, text="⚡ " + self.get_text('presets'))
         
         ttk.Label(tab, text="🚀 Быстрые пресеты", font=("Arial", 10, "bold")).pack(pady=10)
         
@@ -489,26 +738,21 @@ class BackgroundEditorUltimate:
             ("❄️ Cool", self.preset_cool),
             ("🌈 HDR", self.preset_hdr),
             ("🎭 Dramatic", self.preset_dramatic),
-            ("✨ Soft Glow", self.preset_soft_glow),
-            ("📷 Film Grain", self.preset_film_grain),
+            ("✨ Soft Glow", self.preset_soft_glow)
         ]
         
-        # Создаём фрейм для кнопок
         presets_frame = ttk.Frame(tab)
         presets_frame.pack(fill=tk.X, padx=10, pady=5)
         
-        # Размещаем кнопки в grid
         for i, (name, cmd) in enumerate(presets):
             row = i // 3
             col = i % 3
             btn = ttk.Button(presets_frame, text=name, command=cmd, width=14)
             btn.grid(row=row, column=col, padx=5, pady=5, sticky="ew")
         
-        # Настройка колонок, чтобы растягивались
         for col in range(3):
             presets_frame.columnconfigure(col, weight=1)
         
-        # --- ПОЛЬЗОВАТЕЛЬСКИЕ ПРЕСЕТЫ ---
         ttk.Label(tab, text="💾 Пользовательские пресеты", font=("Arial", 10, "bold")).pack(pady=(20, 10))
         
         custom_frame = ttk.Frame(tab)
@@ -536,15 +780,13 @@ class BackgroundEditorUltimate:
     def setup_batch_tab(self, notebook):
         """Вкладка Пакетная обработка"""
         tab = ttk.Frame(notebook)
-        notebook.add(tab, text="📦 Пакетная")
+        notebook.add(tab, text="📦 " + self.get_text('batch'))
         
-        # === ШАБЛОНЫ ===
         template_frame = ttk.LabelFrame(tab, text="📋 Шаблоны")
         template_frame.pack(fill=tk.X, padx=5, pady=5)
         
         self.template_listbox = tk.Listbox(template_frame, height=4)
         self.template_listbox.pack(fill=tk.X, padx=5, pady=5)
-        self.template_listbox.bind('<<ListboxSelect>>', self.on_template_select)
         
         template_btns = ttk.Frame(template_frame)
         template_btns.pack(fill=tk.X, padx=5, pady=2)
@@ -552,7 +794,6 @@ class BackgroundEditorUltimate:
         ttk.Button(template_btns, text="📂 Загрузить", command=self.load_template).pack(side=tk.LEFT, padx=2)
         ttk.Button(template_btns, text="🗑 Удалить", command=self.delete_template).pack(side=tk.LEFT, padx=2)
         
-        # === ОПЕРАЦИИ ===
         ops_frame = ttk.LabelFrame(tab, text="⚙️ Операции")
         ops_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
@@ -566,7 +807,6 @@ class BackgroundEditorUltimate:
         ttk.Button(ops_btns, text="⬆", width=3, command=self.batch_up).pack(side=tk.LEFT, padx=2)
         ttk.Button(ops_btns, text="⬇", width=3, command=self.batch_down).pack(side=tk.LEFT, padx=2)
         
-        # === ВЫПОЛНЕНИЕ ===
         exec_frame = ttk.Frame(tab)
         exec_frame.pack(fill=tk.X, padx=5, pady=5)
         
@@ -575,8 +815,7 @@ class BackgroundEditorUltimate:
             ttk.Radiobutton(exec_frame, text=text, variable=self.batch_target_var, 
                            value=value).pack(side=tk.LEFT, padx=5)
         
-        ttk.Button(tab, text="▶ ВЫПОЛНИТЬ", command=self.execute_batch,
-                  style="Accent.TButton").pack(fill=tk.X, padx=5, pady=5)
+        ttk.Button(tab, text="▶ ВЫПОЛНИТЬ", command=self.execute_batch).pack(fill=tk.X, padx=5, pady=5)
         
         self.batch_progress = ttk.Progressbar(tab, orient=tk.HORIZONTAL, length=200, mode='determinate')
         self.batch_progress.pack(fill=tk.X, padx=5, pady=5)
@@ -586,7 +825,7 @@ class BackgroundEditorUltimate:
     def setup_analysis_tab(self, notebook):
         """Вкладка Анализ"""
         tab = ttk.Frame(notebook)
-        notebook.add(tab, text="📊 Анализ")
+        notebook.add(tab, text="📊 " + self.get_text('analysis'))
         
         analysis_frame = ttk.Frame(tab)
         analysis_frame.pack(fill=tk.X, padx=5, pady=5)
@@ -595,7 +834,6 @@ class BackgroundEditorUltimate:
         ttk.Button(analysis_frame, text="🎨 Цветовая палитра", command=self.analyze_colors).pack(fill=tk.X, pady=2)
         ttk.Button(analysis_frame, text="🔍 Детекция краёв", command=self.analyze_edges).pack(fill=tk.X, pady=2)
         ttk.Button(analysis_frame, text="📐 Качество", command=self.analyze_quality).pack(fill=tk.X, pady=2)
-        ttk.Button(analysis_frame, text="🧬 Сравнить", command=self.compare_images).pack(fill=tk.X, pady=2)
         
         results_frame = ttk.LabelFrame(tab, text="📋 Результаты")
         results_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -606,7 +844,7 @@ class BackgroundEditorUltimate:
     def setup_history_tab(self, notebook):
         """Вкладка История"""
         tab = ttk.Frame(notebook)
-        notebook.add(tab, text="⏳ История")
+        notebook.add(tab, text="⏳ " + self.get_text('history'))
         
         self.history_listbox = tk.Listbox(tab, height=14)
         self.history_listbox.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -614,58 +852,143 @@ class BackgroundEditorUltimate:
         
         hist_btns = ttk.Frame(tab)
         hist_btns.pack(fill=tk.X, padx=5, pady=5)
-        ttk.Button(hist_btns, text="↩ Отменить", command=self.undo).pack(side=tk.LEFT, padx=2)
-        ttk.Button(hist_btns, text="↪ Повторить", command=self.redo).pack(side=tk.LEFT, padx=2)
+        ttk.Button(hist_btns, text="↩ " + self.get_text('undo'), command=self.undo).pack(side=tk.LEFT, padx=2)
+        ttk.Button(hist_btns, text="↪ " + self.get_text('redo'), command=self.redo).pack(side=tk.LEFT, padx=2)
         ttk.Button(hist_btns, text="🧹 Очистить", command=self.clear_history).pack(side=tk.LEFT, padx=2)
         ttk.Button(hist_btns, text="📸 Снимок", command=self.take_snapshot).pack(side=tk.LEFT, padx=2)
         
-        ttk.Label(tab, text=f"Всего шагов: ", font=("Arial", 8)).pack(pady=2)
         self.history_count_label = ttk.Label(tab, text="0")
         self.history_count_label.pack(pady=2)
     
     def setup_settings_tab(self, notebook):
         """Вкладка Настройки"""
         tab = ttk.Frame(notebook)
-        notebook.add(tab, text="⚙️ Настройки")
+        notebook.add(tab, text="⚙️ " + self.get_text('settings_tab'))
         
         # === ОБЩИЕ ===
-        general_frame = ttk.LabelFrame(tab, text="Общие")
+        general_frame = ttk.LabelFrame(tab, text=self.get_text('settings'))
         general_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        ttk.Label(general_frame, text="Язык:").pack(anchor=tk.W, padx=5, pady=2)
+        # Язык
+        ttk.Label(general_frame, text=self.get_text('language') + ":").pack(anchor=tk.W, padx=5, pady=2)
         lang_frame = ttk.Frame(general_frame)
         lang_frame.pack(fill=tk.X, padx=5, pady=2)
         ttk.Button(lang_frame, text="🇷🇺 Русский", command=lambda: self.set_language('ru')).pack(side=tk.LEFT, padx=2)
         ttk.Button(lang_frame, text="🇬🇧 English", command=lambda: self.set_language('en')).pack(side=tk.LEFT, padx=2)
         
-        ttk.Label(general_frame, text="Тема:").pack(anchor=tk.W, padx=5, pady=2)
+        # Тема
+        ttk.Label(general_frame, text=self.get_text('theme') + ":").pack(anchor=tk.W, padx=5, pady=2)
         theme_frame = ttk.Frame(general_frame)
         theme_frame.pack(fill=tk.X, padx=5, pady=2)
-        ttk.Button(theme_frame, text="🌙 Тёмная", command=lambda: self.set_theme('dark')).pack(side=tk.LEFT, padx=2)
-        ttk.Button(theme_frame, text="☀️ Светлая", command=lambda: self.set_theme('light')).pack(side=tk.LEFT, padx=2)
+        ttk.Button(theme_frame, text="🌙 " + self.get_text('dark'), 
+                  command=lambda: self.set_theme('dark')).pack(side=tk.LEFT, padx=2)
+        ttk.Button(theme_frame, text="☀️ " + self.get_text('light'), 
+                  command=lambda: self.set_theme('light')).pack(side=tk.LEFT, padx=2)
         
-        ttk.Checkbutton(general_frame, text="Показывать подсказки", 
-                       variable=self.show_tooltips,
-                       command=self.toggle_tooltips).pack(anchor=tk.W, padx=5, pady=2)
+        # === СТИЛЬ WINDOWS ===
+        style_frame = ttk.LabelFrame(tab, text=self.get_text('windows_style'))
+        style_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        windows_styles = ['Windows XP', 'Windows Vista', 'Windows 7', 'Windows 8', 'Windows 10', 'Windows 11']
+        self.windows_style_var = tk.StringVar(value=self.config.get('windows_style', 'Windows 10'))
+        
+        for style in windows_styles:
+            ttk.Radiobutton(style_frame, text=style, 
+                          variable=self.windows_style_var, value=style,
+                          command=self.apply_windows_style).pack(anchor=tk.W, padx=10, pady=2)
+        
+        # === СТИЛЬ ИНТЕРФЕЙСА ===
+        interface_frame = ttk.LabelFrame(tab, text=self.get_text('interface_style'))
+        interface_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        interface_presets = list(self.interface_presets.keys())
+        self.interface_style_var = tk.StringVar(value=self.config.get('interface_style', 'Классический'))
+        
+        # Создаём прокручиваемый список
+        interface_listbox = tk.Listbox(interface_frame, height=6, selectmode=tk.SINGLE)
+        interface_listbox.pack(fill=tk.X, padx=5, pady=5)
+        
+        for preset in interface_presets:
+            interface_listbox.insert(tk.END, preset)
+        
+        # Выбираем текущий
+        current = self.config.get('interface_style', 'Классический')
+        if current in interface_presets:
+            interface_listbox.selection_set(interface_presets.index(current))
+        
+        def apply_interface_selection(event=None):
+            selected = interface_listbox.curselection()
+            if selected:
+                style_name = interface_listbox.get(selected[0])
+                self.config['interface_style'] = style_name
+                self.apply_interface_style()
+                self.update_status()
+        
+        interface_listbox.bind('<<ListboxSelect>>', apply_interface_selection)
+        
+        # === НАСТРОЙКИ ИНТЕРФЕЙСА ===
+        custom_interface_frame = ttk.LabelFrame(tab, text="🎨 Настройка интерфейса")
+        custom_interface_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Цвет фона
+        ttk.Label(custom_interface_frame, text="Цвет фона:").pack(anchor=tk.W, padx=5, pady=2)
+        bg_color_frame = ttk.Frame(custom_interface_frame)
+        bg_color_frame.pack(fill=tk.X, padx=5, pady=2)
+        self.bg_color_entry = ttk.Entry(bg_color_frame, width=15)
+        self.bg_color_entry.pack(side=tk.LEFT, padx=2)
+        self.bg_color_entry.insert(0, self.interface_custom_settings.get('bg_color', '#2b2b2b'))
+        ttk.Button(bg_color_frame, text="🎨", width=3,
+                  command=lambda: self.choose_interface_color('bg_color')).pack(side=tk.LEFT, padx=2)
+        
+        # Цвет текста
+        ttk.Label(custom_interface_frame, text="Цвет текста:").pack(anchor=tk.W, padx=5, pady=2)
+        fg_color_frame = ttk.Frame(custom_interface_frame)
+        fg_color_frame.pack(fill=tk.X, padx=5, pady=2)
+        self.fg_color_entry = ttk.Entry(fg_color_frame, width=15)
+        self.fg_color_entry.pack(side=tk.LEFT, padx=2)
+        self.fg_color_entry.insert(0, self.interface_custom_settings.get('fg_color', '#ffffff'))
+        ttk.Button(fg_color_frame, text="🎨", width=3,
+                  command=lambda: self.choose_interface_color('fg_color')).pack(side=tk.LEFT, padx=2)
+        
+        # Шрифт
+        ttk.Label(custom_interface_frame, text="Шрифт:").pack(anchor=tk.W, padx=5, pady=2)
+        self.font_entry = ttk.Entry(custom_interface_frame)
+        self.font_entry.pack(fill=tk.X, padx=5, pady=2)
+        self.font_entry.insert(0, self.interface_custom_settings.get('font_family', 'Segoe UI'))
+        
+        # Размер шрифта
+        ttk.Label(custom_interface_frame, text="Размер шрифта:").pack(anchor=tk.W, padx=5, pady=2)
+        self.font_size_scale = ttk.Scale(custom_interface_frame, from_=8, to=16, orient=tk.HORIZONTAL)
+        self.font_size_scale.set(self.interface_custom_settings.get('font_size', 9))
+        self.font_size_scale.pack(fill=tk.X, padx=5, pady=2)
+        
+        def apply_custom_interface():
+            self.interface_custom_settings['bg_color'] = self.bg_color_entry.get()
+            self.interface_custom_settings['fg_color'] = self.fg_color_entry.get()
+            self.interface_custom_settings['font_family'] = self.font_entry.get()
+            self.interface_custom_settings['font_size'] = int(self.font_size_scale.get())
+            self.apply_interface_style()
+            self.info_label.config(text="✅ Интерфейс обновлён")
+        
+        ttk.Button(custom_interface_frame, text="Применить настройки интерфейса",
+                  command=apply_custom_interface).pack(fill=tk.X, padx=5, pady=5)
         
         # === СОХРАНЕНИЕ ===
-        save_frame = ttk.LabelFrame(tab, text="Сохранение")
+        save_frame = ttk.LabelFrame(tab, text="💾 Сохранение")
         save_frame.pack(fill=tk.X, padx=5, pady=5)
         
         self.auto_save_var = tk.BooleanVar(value=self.auto_save_enabled)
-        ttk.Checkbutton(save_frame, text="Автосохранение", 
+        ttk.Checkbutton(save_frame, text=self.get_text('auto_save'), 
                        variable=self.auto_save_var,
                        command=self.toggle_auto_save).pack(anchor=tk.W, padx=5, pady=2)
         
-        ttk.Label(save_frame, text="Интервал (сек):").pack(anchor=tk.W, padx=5, pady=2)
-        self.interval_entry = ttk.Entry(save_frame, width=10)
-        self.interval_entry.insert(0, str(self.auto_save_interval))
-        self.interval_entry.pack(anchor=tk.W, padx=5, pady=2)
-        ttk.Button(save_frame, text="Обновить интервал", 
-                  command=self.update_interval).pack(fill=tk.X, padx=5, pady=2)
+        self.confirm_delete_var = tk.BooleanVar(value=self.config.get('confirm_delete', True))
+        ttk.Checkbutton(save_frame, text=self.get_text('confirm_delete'),
+                       variable=self.confirm_delete_var,
+                       command=lambda: self.config.update({'confirm_delete': self.confirm_delete_var.get()})).pack(anchor=tk.W, padx=5, pady=2)
         
         # === ОБНОВЛЕНИЯ ===
-        update_frame = ttk.LabelFrame(tab, text="Обновления")
+        update_frame = ttk.LabelFrame(tab, text="🔄 Обновления")
         update_frame.pack(fill=tk.X, padx=5, pady=5)
         
         self.check_updates_var = tk.BooleanVar(value=self.config.get('check_updates', True))
@@ -673,24 +996,21 @@ class BackgroundEditorUltimate:
                        variable=self.check_updates_var,
                        command=self.toggle_update_check).pack(anchor=tk.W, padx=5, pady=2)
         
-        ttk.Label(update_frame, text=f"Текущая версия: {self.version}").pack(anchor=tk.W, padx=5, pady=2)
-        ttk.Button(update_frame, text="🔄 Проверить обновления сейчас", 
+        ttk.Label(update_frame, text=f"Версия: {self.version}").pack(anchor=tk.W, padx=5, pady=2)
+        ttk.Button(update_frame, text="🔄 " + self.get_text('check_updates'), 
                   command=self.check_updates_manual).pack(fill=tk.X, padx=5, pady=2)
         
-        # === ПРОГРАММА ===
-        info_frame = ttk.LabelFrame(tab, text="О программе")
+        # === О ПРОГРАММЕ ===
+        info_frame = ttk.LabelFrame(tab, text="ℹ️ " + self.get_text('about'))
         info_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        ttk.Label(info_frame, text=f"Редактор Фона Ultimate v{self.version}").pack(pady=5)
-        
-        status_text = "✅ ИИ доступен" if self.has_ai else "⚠️ ИИ не доступен"
-        ttk.Label(info_frame, text=f"Статус: {status_text}").pack(pady=2)
-        
-        ttk.Button(info_frame, text="📖 О программе", command=self.show_about).pack(fill=tk.X, padx=5, pady=5)
+        ttk.Label(info_frame, text=f"{self.program_name} v{self.version}").pack(pady=5)
+        ttk.Button(info_frame, text="📖 " + self.get_text('help_text'), command=self.show_help).pack(fill=tk.X, padx=5, pady=2)
+        ttk.Button(info_frame, text="⌨️ " + self.get_text('hotkeys'), command=self.show_hotkeys).pack(fill=tk.X, padx=5, pady=2)
+        ttk.Button(info_frame, text="ℹ️ " + self.get_text('about'), command=self.show_about).pack(fill=tk.X, padx=5, pady=2)
     
     def setup_preview(self, container):
         """Область предпросмотра"""
-        # Панель инструментов
         toolbar = ttk.Frame(container)
         toolbar.pack(fill=tk.X, pady=2)
         
@@ -704,7 +1024,6 @@ class BackgroundEditorUltimate:
         self.zoom_label = ttk.Label(toolbar, text="100%")
         self.zoom_label.pack(side=tk.LEFT, padx=10)
         
-        # Холст
         canvas_frame = ttk.Frame(container)
         canvas_frame.pack(fill=tk.BOTH, expand=True)
         
@@ -712,14 +1031,12 @@ class BackgroundEditorUltimate:
                                highlightbackground='#555', cursor='cross')
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
-        # Скроллы
         v_scroll = ttk.Scrollbar(canvas_frame, orient=tk.VERTICAL, command=self.canvas.yview)
         v_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         h_scroll = ttk.Scrollbar(container, orient=tk.HORIZONTAL, command=self.canvas.xview)
         h_scroll.pack(side=tk.BOTTOM, fill=tk.X)
         self.canvas.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
         
-        # Информация
         info_frame = ttk.Frame(container)
         info_frame.pack(fill=tk.X, pady=(5, 0))
         
@@ -732,7 +1049,6 @@ class BackgroundEditorUltimate:
         self.size_label = ttk.Label(info_frame, text="")
         self.size_label.pack(side=tk.RIGHT, padx=10)
         
-        # События
         self.canvas.bind("<ButtonPress-1>", self.on_mouse_down)
         self.canvas.bind("<B1-Motion>", self.on_mouse_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_mouse_up)
@@ -744,20 +1060,17 @@ class BackgroundEditorUltimate:
         self.drag_start_x = 0
         self.drag_start_y = 0
         self.is_dragging = False
-        self.resize_mode = False
-        self.resize_handle = None
     
     def setup_properties_panel(self, container):
         """Панель свойств"""
         notebook = ttk.Notebook(container)
         notebook.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
         
-        # === СВОЙСТВА ===
         props_tab = ttk.Frame(notebook)
-        notebook.add(props_tab, text="📐 Свойства")
+        notebook.add(props_tab, text="📐 " + self.get_text('properties'))
         
         # Позиция
-        pos_frame = ttk.LabelFrame(props_tab, text="📍 Позиция")
+        pos_frame = ttk.LabelFrame(props_tab, text="📍 " + self.get_text('position'))
         pos_frame.pack(fill=tk.X, padx=5, pady=5)
         
         coord_grid = ttk.Frame(pos_frame)
@@ -771,7 +1084,7 @@ class BackgroundEditorUltimate:
         ttk.Button(coord_grid, text="Прим", command=self.apply_position, width=5).pack(side=tk.LEFT, padx=2)
         
         # Размер
-        size_frame = ttk.LabelFrame(props_tab, text="📏 Размер")
+        size_frame = ttk.LabelFrame(props_tab, text="📏 " + self.get_text('size'))
         size_frame.pack(fill=tk.X, padx=5, pady=5)
         
         size_grid = ttk.Frame(size_frame)
@@ -784,11 +1097,31 @@ class BackgroundEditorUltimate:
         self.height_entry.pack(side=tk.LEFT, padx=2)
         ttk.Button(size_grid, text="Прим", command=self.apply_size, width=5).pack(side=tk.LEFT, padx=2)
         
-        ttk.Button(size_frame, text="🔒 Сохранить пропорции", 
-                  command=self.lock_aspect).pack(fill=tk.X, pady=2)
+        ttk.Button(size_frame, text="🔒 Сохранить пропорции", command=self.lock_aspect).pack(fill=tk.X, pady=2)
+        
+        # Популярные форматы
+        format_frame = ttk.LabelFrame(props_tab, text="📐 Популярные форматы")
+        format_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        formats = [
+            ("4:3", 4/3), ("3:4", 3/4),
+            ("16:9", 16/9), ("9:16", 9/16),
+            ("1:1", 1), ("2:3", 2/3),
+            ("3:2", 3/2), ("5:4", 5/4)
+        ]
+        
+        format_btns = ttk.Frame(format_frame)
+        format_btns.pack(fill=tk.X, pady=2)
+        
+        for i, (name, ratio) in enumerate(formats):
+            row = i // 4
+            col = i % 4
+            btn = ttk.Button(format_btns, text=name, width=8,
+                           command=lambda r=ratio: self.apply_format(r))
+            btn.grid(row=row, column=col, padx=2, pady=2)
         
         # Поворот
-        rot_frame = ttk.LabelFrame(props_tab, text="🔄 Поворот")
+        rot_frame = ttk.LabelFrame(props_tab, text="🔄 " + self.get_text('rotation'))
         rot_frame.pack(fill=tk.X, padx=5, pady=5)
         
         self.angle_scale = ttk.Scale(rot_frame, from_=0, to=360, orient=tk.HORIZONTAL,
@@ -804,7 +1137,7 @@ class BackgroundEditorUltimate:
                       command=lambda a=angle: self.set_angle(a)).pack(side=tk.LEFT, padx=2)
         
         # Прозрачность
-        opacity_frame = ttk.LabelFrame(props_tab, text="👁 Прозрачность")
+        opacity_frame = ttk.LabelFrame(props_tab, text="👁 " + self.get_text('opacity'))
         opacity_frame.pack(fill=tk.X, padx=5, pady=5)
         
         self.opacity_scale = ttk.Scale(opacity_frame, from_=0, to=100, orient=tk.HORIZONTAL,
@@ -814,7 +1147,7 @@ class BackgroundEditorUltimate:
         self.opacity_label.pack(pady=2)
         
         # Отражение
-        mirror_frame = ttk.LabelFrame(props_tab, text="🔄 Отражение")
+        mirror_frame = ttk.LabelFrame(props_tab, text="🔄 " + self.get_text('mirror'))
         mirror_frame.pack(fill=tk.X, padx=5, pady=5)
         
         mirror_btns = ttk.Frame(mirror_frame)
@@ -833,53 +1166,52 @@ class BackgroundEditorUltimate:
         
         # Файл
         file_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="📁 Файл", menu=file_menu)
-        file_menu.add_command(label="📄 Новый проект", command=self.new_project, accelerator="Ctrl+N")
-        file_menu.add_command(label="📂 Открыть", command=self.open_project, accelerator="Ctrl+O")
-        file_menu.add_command(label="💾 Сохранить", command=self.save_project, accelerator="Ctrl+S")
-        file_menu.add_command(label="💾 Сохранить как", command=self.save_project_as, accelerator="Ctrl+Shift+S")
+        menubar.add_cascade(label="📁 " + self.get_text('file'), menu=file_menu)
+        file_menu.add_command(label="📄 " + self.get_text('new'), command=self.new_project, accelerator="Ctrl+N")
+        file_menu.add_command(label="📂 " + self.get_text('open'), command=self.open_project, accelerator="Ctrl+O")
+        file_menu.add_command(label="💾 " + self.get_text('save'), command=self.save_project, accelerator="Ctrl+S")
+        file_menu.add_command(label="💾 " + self.get_text('save_as'), command=self.save_project_as, accelerator="Ctrl+Shift+S")
         file_menu.add_separator()
-        file_menu.add_command(label="📤 Экспорт", command=self.export_dialog, accelerator="Ctrl+E")
-        file_menu.add_command(label="📥 Импорт", command=self.import_file, accelerator="Ctrl+I")
+        file_menu.add_command(label="📤 " + self.get_text('export'), command=self.export_dialog, accelerator="Ctrl+E")
+        file_menu.add_command(label="📥 " + self.get_text('import'), command=self.import_file, accelerator="Ctrl+I")
         file_menu.add_separator()
-        file_menu.add_command(label="🚪 Выход", command=self.root.quit, accelerator="Ctrl+Q")
+        file_menu.add_command(label="🚪 " + self.get_text('exit'), command=self.root.quit, accelerator="Ctrl+Q")
         
         # Правка
         edit_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="✏️ Правка", menu=edit_menu)
-        edit_menu.add_command(label="↩ Отмена", command=self.undo, accelerator="Ctrl+Z")
-        edit_menu.add_command(label="↪ Повтор", command=self.redo, accelerator="Ctrl+Y")
+        menubar.add_cascade(label="✏️ " + self.get_text('edit'), menu=edit_menu)
+        edit_menu.add_command(label="↩ " + self.get_text('undo'), command=self.undo, accelerator="Ctrl+Z")
+        edit_menu.add_command(label="↪ " + self.get_text('redo'), command=self.redo, accelerator="Ctrl+Y")
         edit_menu.add_separator()
-        edit_menu.add_command(label="✂️ Вырезать", command=self.cut_objects, accelerator="Ctrl+X")
-        edit_menu.add_command(label="📋 Копировать", command=self.copy_objects, accelerator="Ctrl+C")
-        edit_menu.add_command(label="📋 Вставить", command=self.paste_objects, accelerator="Ctrl+V")
+        edit_menu.add_command(label="✂️ " + self.get_text('cut'), command=self.cut_objects, accelerator="Ctrl+X")
+        edit_menu.add_command(label="📋 " + self.get_text('copy'), command=self.copy_objects, accelerator="Ctrl+C")
+        edit_menu.add_command(label="📋 " + self.get_text('paste'), command=self.paste_objects, accelerator="Ctrl+V")
         edit_menu.add_separator()
-        edit_menu.add_command(label="🎯 Выделить всё", command=self.select_all, accelerator="Ctrl+A")
-        edit_menu.add_command(label="❌ Снять выделение", command=self.deselect_all, accelerator="Esc")
+        edit_menu.add_command(label="🎯 " + self.get_text('select_all'), command=self.select_all, accelerator="Ctrl+A")
+        edit_menu.add_command(label="❌ " + self.get_text('deselect'), command=self.deselect_all, accelerator="Esc")
         
         # Вид
         view_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="👁 Вид", menu=view_menu)
-        view_menu.add_command(label="🔍 Увеличить", command=self.zoom_in, accelerator="Ctrl++")
-        view_menu.add_command(label="🔍 Уменьшить", command=self.zoom_out, accelerator="Ctrl+-")
-        view_menu.add_command(label="⟳ Сбросить вид", command=self.reset_view)
+        menubar.add_cascade(label="👁 " + self.get_text('view'), menu=view_menu)
+        view_menu.add_command(label="🔍 " + self.get_text('zoom_in'), command=self.zoom_in, accelerator="Ctrl++")
+        view_menu.add_command(label="🔍 " + self.get_text('zoom_out'), command=self.zoom_out, accelerator="Ctrl+-")
+        view_menu.add_command(label="⟳ " + self.get_text('reset_view'), command=self.reset_view)
         view_menu.add_separator()
-        view_menu.add_command(label="⬡ Сетка", command=self.toggle_grid)
-        view_menu.add_command(label="📐 Правило третей", command=self.toggle_rules)
-        view_menu.add_command(label="📐 Маркеры ресайза", command=self.toggle_resize_handles)
+        view_menu.add_command(label="⬡ " + self.get_text('grid'), command=self.toggle_grid)
+        view_menu.add_command(label="📐 " + self.get_text('rules'), command=self.toggle_rules)
+        view_menu.add_command(label="📐 " + self.get_text('resize_handles'), command=self.toggle_resize_handles)
         
         # Обновление
         update_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="🔄 Обновление", menu=update_menu)
-        update_menu.add_command(label="🔄 Проверить обновления", command=self.check_updates_manual)
-        update_menu.add_command(label="⚙️ Настройки обновлений", command=self.update_settings)
+        menubar.add_cascade(label="🔄 " + self.get_text('check_updates'), menu=update_menu)
+        update_menu.add_command(label="🔄 " + self.get_text('check_updates'), command=self.check_updates_manual)
         
         # Помощь
         help_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="❓ Помощь", menu=help_menu)
-        help_menu.add_command(label="📖 Справка", command=self.show_help)
-        help_menu.add_command(label="⌨️ Горячие клавиши", command=self.show_hotkeys)
-        help_menu.add_command(label="ℹ️ О программе", command=self.show_about)
+        menubar.add_cascade(label="❓ " + self.get_text('help'), menu=help_menu)
+        help_menu.add_command(label="📖 " + self.get_text('help_text'), command=self.show_help)
+        help_menu.add_command(label="⌨️ " + self.get_text('hotkeys'), command=self.show_hotkeys)
+        help_menu.add_command(label="ℹ️ " + self.get_text('about'), command=self.show_about)
     
     def setup_hotkeys(self):
         """Горячие клавиши"""
@@ -901,12 +1233,51 @@ class BackgroundEditorUltimate:
         self.root.bind('<Delete>', lambda e: self.delete_objects())
         self.root.bind('<Escape>', lambda e: self.deselect_all())
         self.root.bind('<F2>', lambda e: self.rename_layer())
-        self.root.bind('<Tab>', lambda e: self.select_next_object())
-        self.root.bind('<Shift-Tab>', lambda e: self.select_prev_object())
     
-    def setup_tooltips(self):
-        """Подсказки"""
-        self.tooltips = {}
+    def setup_context_menu(self):
+        """Контекстное меню (ПКМ)"""
+        self.context_menu = tk.Menu(self.root, tearoff=0)
+        self.context_menu.add_command(label="ℹ️ Информация", command=self.show_context_info)
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="✂️ Вырезать", command=self.cut_objects)
+        self.context_menu.add_command(label="📋 Копировать", command=self.copy_objects)
+        self.context_menu.add_command(label="📋 Вставить", command=self.paste_objects)
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="🗑 Удалить", command=self.delete_objects)
+        
+        # Привязываем ПКМ ко всем виджетам
+        self.root.bind("<Button-3>", self.show_context_menu)
+        self.canvas.bind("<Button-3>", self.show_context_menu)
+    
+    def show_context_menu(self, event):
+        """Показать контекстное меню"""
+        try:
+            self.context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.context_menu.grab_release()
+    
+    def show_context_info(self):
+        """Показать информацию по ПКМ"""
+        info_text = """📖 Информация о программе
+
+Редактор фона 1.0
+
+Это программа для редактирования изображений,
+позволяющая менять фон, добавлять объекты,
+применять фильтры и эффекты, а также
+работать со слоями.
+
+Основные возможности:
+• Добавление и удаление фона
+• Работа с объектами и слоями
+• Фильтры и эффекты
+• Пакетная обработка
+• Экспорт в различные форматы
+
+Версия: 1.0
+Разработчик: DeepSeek"""
+        
+        messagebox.showinfo("ℹ️ Информация", info_text)
     
     def setup_drag_drop(self):
         """Drag & Drop"""
@@ -917,100 +1288,88 @@ class BackgroundEditorUltimate:
         except:
             pass
     
-    # === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
+    # === ФУНКЦИИ ИНТЕРФЕЙСА ===
     
-    def get_layer_objects(self, layer_index):
-        """Получить объекты слоя"""
-        if layer_index < len(self.layers):
-            return self.layers[layer_index]['objects']
-        return []
-    
-    def add_to_history(self, action_name):
-        """Добавить действие в историю"""
-        state = self.get_current_state()
+    def apply_windows_style(self):
+        """Применить стиль Windows"""
+        style_name = self.windows_style_var.get()
+        self.config['windows_style'] = style_name
         
-        self.history = self.history[:self.history_index + 1]
+        style = ttk.Style()
         
-        snapshot = {
-            'name': action_name,
-            'time': datetime.now().isoformat(),
-            'state': state
-        }
+        if style_name == 'Windows XP':
+            style.theme_use('classic')
+            self.root.configure(bg='#3a6ea5')
+        elif style_name == 'Windows Vista':
+            try:
+                style.theme_use('vista')
+            except:
+                style.theme_use('default')
+            self.root.configure(bg='#d4d0c8')
+        elif style_name == 'Windows 7':
+            try:
+                style.theme_use('vista')
+            except:
+                style.theme_use('default')
+            self.root.configure(bg='#d4d0c8')
+        elif style_name == 'Windows 8':
+            try:
+                style.theme_use('vista')
+            except:
+                style.theme_use('default')
+            self.root.configure(bg='#00a2ed')
+        elif style_name == 'Windows 10':
+            try:
+                style.theme_use('vista')
+            except:
+                style.theme_use('default')
+            self.root.configure(bg='#0078d7')
+        elif style_name == 'Windows 11':
+            try:
+                style.theme_use('vista')
+            except:
+                style.theme_use('default')
+            self.root.configure(bg='#005fb8')
         
-        self.history.append(snapshot)
-        self.history_index += 1
+        self.update_status()
+    
+    def apply_interface_style(self):
+        """Применить стиль интерфейса"""
+        style_name = self.config.get('interface_style', 'Классический')
         
-        if len(self.history) > self.max_history:
-            self.history.pop(0)
-            self.history_index -= 1
+        # Получаем настройки из пресета или пользовательские
+        if style_name in self.interface_presets:
+            settings = self.interface_presets[style_name]
+        else:
+            settings = self.interface_custom_settings
         
-        self.update_history_list()
-        self.history_count_label.config(text=f"{len(self.history)}")
-    
-    def get_current_state(self):
-        """Получить текущее состояние"""
-        return {
-            'objects': copy.deepcopy(self.objects),
-            'layers': copy.deepcopy(self.layers),
-            'background': self.current_background.copy() if self.current_background else None,
-            'selected': [self.objects.index(obj) for obj in self.selected_objects if obj in self.objects]
-        }
-    
-    def restore_state(self, state):
-        """Восстановить состояние"""
-        self.objects = copy.deepcopy(state['objects'])
-        self.layers = copy.deepcopy(state['layers'])
-        if state['background']:
-            self.current_background = state['background'].copy()
-        self.selected_objects = [self.objects[i] for i in state['selected'] if i < len(self.objects)]
+        # Применяем настройки к корневому окну
+        self.root.configure(bg=settings.get('bg_color', '#2b2b2b'))
+        self.canvas.configure(bg=settings.get('bg_color', '#2b2b2b'))
         
-        self.update_layer_list()
-        self.update_preview()
-        self.update_properties_panel()
+        # Обновляем стиль
+        style = ttk.Style()
+        style.configure('TFrame', background=settings.get('bg_color', '#2b2b2b'))
+        style.configure('TLabel', background=settings.get('bg_color', '#2b2b2b'),
+                       foreground=settings.get('fg_color', '#ffffff'),
+                       font=(settings.get('font_family', 'Segoe UI'), settings.get('font_size', 9)))
+        style.configure('TButton', background=settings.get('button_color', '#3b3b3b'),
+                       foreground=settings.get('fg_color', '#ffffff'),
+                       font=(settings.get('font_family', 'Segoe UI'), settings.get('font_size', 9)))
+        style.configure('TNotebook.Tab', padding=settings.get('padding', 5))
+        
+        self.update_status()
     
-    def update_layer_list(self):
-        """Обновить список слоёв"""
-        self.layer_listbox.delete(0, tk.END)
-        for i, layer in enumerate(reversed(self.layers)):
-            visible = "👁" if layer['visible'] else "👁‍🗨"
-            name = layer['name']
-            count = len(layer['objects'])
-            blend = f" [{layer.get('blend_mode', 'normal')}]" if layer.get('blend_mode') != 'normal' else ""
-            self.layer_listbox.insert(tk.END, f"{visible} {name}{blend} ({count})")
-            if i == len(self.layers) - 1 - self.current_layer_index:
-                self.layer_listbox.selection_set(i)
-    
-    def update_history_list(self):
-        """Обновить список истории"""
-        self.history_listbox.delete(0, tk.END)
-        for i, item in enumerate(self.history):
-            prefix = "▶ " if i == self.history_index else "  "
-            self.history_listbox.insert(tk.END, f"{prefix}{item['name']}")
-            if i == self.history_index:
-                self.history_listbox.selection_set(i)
-    
-    def update_properties_panel(self):
-        """Обновить панель свойств"""
-        if self.selected_objects:
-            obj = self.selected_objects[0]
-            self.x_entry.delete(0, tk.END)
-            self.x_entry.insert(0, str(int(obj['x'])))
-            self.y_entry.delete(0, tk.END)
-            self.y_entry.insert(0, str(int(obj['y'])))
-            self.width_entry.delete(0, tk.END)
-            self.width_entry.insert(0, str(obj['width']))
-            self.height_entry.delete(0, tk.END)
-            self.height_entry.insert(0, str(obj['height']))
-            self.angle_scale.set(obj['angle'])
-            self.angle_label.config(text=f"{int(obj['angle'])}°")
-            self.opacity_scale.set(obj['opacity'])
-            self.opacity_label.config(text=f"{int(obj['opacity'])}%")
-    
-    def update_custom_preset_list(self):
-        """Обновить список пользовательских пресетов"""
-        self.custom_preset_list.delete(0, tk.END)
-        for name in self.custom_presets.keys():
-            self.custom_preset_list.insert(tk.END, name)
+    def choose_interface_color(self, color_type):
+        """Выбор цвета интерфейса"""
+        color = colorchooser.askcolor()[1]
+        if color:
+            if color_type == 'bg_color':
+                self.bg_color_entry.delete(0, tk.END)
+                self.bg_color_entry.insert(0, color)
+            elif color_type == 'fg_color':
+                self.fg_color_entry.delete(0, tk.END)
+                self.fg_color_entry.insert(0, color)
     
     def apply_theme(self):
         """Применить тему"""
@@ -1025,113 +1384,42 @@ class BackgroundEditorUltimate:
         """Установить тему"""
         self.config['theme'] = theme
         self.apply_theme()
-        self.info_label.config(text=f"✅ Тема: {theme}")
+        self.update_status()
     
     def set_language(self, lang):
         """Установить язык"""
         self.current_language = lang
-        self.info_label.config(text=f"✅ Язык: {lang}")
-    
-    def toggle_tooltips(self):
-        """Переключить подсказки"""
-        pass
+        self.config['language'] = lang
+        
+        # Обновляем заголовок окна
+        program_name = self.get_text('program_name')
+        self.root.title(f"{program_name} v{self.version}")
+        
+        self.update_status()
+        self.info_label.config(text=f"✅ Язык: {'Русский' if lang == 'ru' else 'English'}")
+        
+        # TODO: Полное обновление интерфейса (для упрощения просто перезапускаем)
+        messagebox.showinfo("Язык", "Для полного применения языка перезапустите программу")
     
     def toggle_auto_save(self):
-        """Переключить автосохранение"""
         self.auto_save_enabled = self.auto_save_var.get()
-        self.info_label.config(text=f"✅ Автосохранение: {'Вкл' if self.auto_save_enabled else 'Выкл'}")
-    
-    def update_interval(self):
-        """Обновить интервал автосохранения"""
-        try:
-            interval = int(self.interval_entry.get())
-            self.auto_save_interval = interval
-            self.info_label.config(text=f"✅ Интервал: {interval} сек")
-        except:
-            pass
     
     def toggle_update_check(self):
-        """Переключить проверку обновлений"""
         self.config['check_updates'] = self.check_updates_var.get()
     
-    # === ОБНОВЛЕНИЯ ===
+    def toggle_resize_handles(self):
+        self.update_preview()
     
-    def check_updates_auto(self):
-        """Автоматическая проверка обновлений"""
-        if not self.config.get('check_updates', True):
-            return
-        
-        try:
-            has_update, version, url = self.updater.check_for_updates()
-            if has_update:
-                if messagebox.askyesno("🔄 Обновление", 
-                    f"Доступна новая версия {version}!\n\n"
-                    f"Текущая: {self.version}\n"
-                    f"Новая: {version}\n\n"
-                    "Скачать обновление?"):
-                    self.download_update(url)
-        except:
-            pass
-    
-    def check_updates_manual(self):
-        """Ручная проверка обновлений"""
-        self.info_label.config(text="🔄 Проверка обновлений...")
-        
-        def check():
-            try:
-                has_update, version, url = self.updater.check_for_updates()
-                if has_update:
-                    self.root.after(0, lambda: messagebox.askyesno("🔄 Обновление",
-                        f"Доступна новая версия {version}!\n\nОбновить?"))
-                    self.root.after(0, lambda: self.info_label.config(text="✅ Обновление доступно!"))
-                else:
-                    self.root.after(0, lambda: self.info_label.config(text="✅ Обновлений нет"))
-            except Exception as e:
-                self.root.after(0, lambda: self.info_label.config(text=f"⚠️ {str(e)}"))
-        
-        threading.Thread(target=check, daemon=True).start()
-    
-    def download_update(self, url):
-        """Скачать обновление"""
-        self.info_label.config(text="📥 Скачивание...")
-        
-        def download():
-            new_exe, error = self.updater.download_update(url)
-            if new_exe:
-                self.root.after(0, lambda: self.apply_update(new_exe))
-            else:
-                self.root.after(0, lambda: messagebox.showerror("Ошибка", error))
-                self.root.after(0, lambda: self.info_label.config(text="⚠️ Ошибка скачивания"))
-        
-        threading.Thread(target=download, daemon=True).start()
-    
-    def apply_update(self, new_exe):
-        """Применить обновление"""
-        success, msg = self.updater.apply_update(new_exe)
-        if success:
-            messagebox.showinfo("✅ Обновление", "Программа перезапустится")
-            self.root.quit()
-        else:
-            messagebox.showerror("Ошибка", msg)
-    
-    def update_settings(self):
-        """Настройки обновлений"""
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Настройки обновлений")
-        dialog.geometry("400x200")
-        dialog.transient(self.root)
-        
-        ttk.Label(dialog, text=f"Текущая версия: {self.version}", font=("Arial", 10)).pack(pady=10)
-        
-        check_var = tk.BooleanVar(value=self.config.get('check_updates', True))
-        ttk.Checkbutton(dialog, text="Проверять при запуске", 
-                       variable=check_var,
-                       command=lambda: self.config.update({'check_updates': check_var.get()})).pack(pady=5)
-        
-        ttk.Button(dialog, text="🔄 Проверить сейчас", 
-                  command=lambda: [dialog.destroy(), self.check_updates_manual()]).pack(pady=10)
-        
-        ttk.Button(dialog, text="Закрыть", command=dialog.destroy).pack(pady=5)
+    def update_status(self):
+        """Обновить статус"""
+        status = "✅ Готов к работе"
+        if self.has_ai:
+            status += " | 🤖 ИИ доступен"
+        if self.has_svg:
+            status += " | 📤 SVG доступен"
+        status += f" | {self.get_text('language')}: {'Русский' if self.current_language == 'ru' else 'English'}"
+        status += f" | Стиль: {self.config.get('windows_style', 'Windows 10')}"
+        self.info_label.config(text=status)
     
     # === ОСНОВНЫЕ ФУНКЦИИ ===
     
@@ -1151,6 +1439,43 @@ class BackgroundEditorUltimate:
                 self.info_label.config(text=f"✅ Фон добавлен: {os.path.basename(file_path)}")
             except Exception as e:
                 messagebox.showerror("Ошибка", str(e))
+    
+    def add_objects_batch(self):
+        """Пакетное добавление объектов"""
+        files = filedialog.askopenfilenames(
+            title="Выберите несколько изображений",
+            filetypes=[("Изображения", "*.png *.jpg *.jpeg *.bmp *.gif *.webp")]
+        )
+        
+        if files:
+            count = 0
+            for file_path in files:
+                try:
+                    img = Image.open(file_path)
+                    obj = {
+                        'image': img,
+                        'x': 100 + count * 20,
+                        'y': 100 + count * 20,
+                        'width': img.width,
+                        'height': img.height,
+                        'angle': 0,
+                        'opacity': 100,
+                        'mirror_x': False,
+                        'mirror_y': False,
+                        'path': file_path,
+                        'layer': self.current_layer_index
+                    }
+                    self.objects.append(obj)
+                    if self.current_layer_index < len(self.layers):
+                        self.layers[self.current_layer_index]['objects'].append(obj)
+                    count += 1
+                except Exception as e:
+                    print(f"Ошибка загрузки {file_path}: {e}")
+            
+            self.selected_objects = self.objects[-count:] if count > 0 else []
+            self.update_preview()
+            self.add_to_history(f"Добавлено объектов: {count}")
+            self.info_label.config(text=f"✅ Добавлено объектов: {count}")
     
     def add_object(self):
         """Добавить объект"""
@@ -1190,7 +1515,6 @@ class BackgroundEditorUltimate:
             'name': name,
             'visible': True,
             'opacity': 100,
-            'blend_mode': 'normal',
             'objects': []
         }
         self.layers.append(layer)
@@ -1208,16 +1532,30 @@ class BackgroundEditorUltimate:
         selected = self.layer_listbox.curselection()
         if selected:
             index = len(self.layers) - 1 - selected[0]
-            if messagebox.askyesno("Удаление", f"Удалить слой '{self.layers[index]['name']}'?"):
-                for obj in self.layers[index]['objects']:
-                    if obj in self.objects:
-                        self.objects.remove(obj)
-                del self.layers[index]
-                if self.current_layer_index >= len(self.layers):
-                    self.current_layer_index = len(self.layers) - 1
-                self.update_layer_list()
-                self.update_preview()
-                self.add_to_history("Удалён слой")
+            if self.config.get('confirm_delete', True):
+                if not messagebox.askyesno("Удаление", f"Удалить слой '{self.layers[index]['name']}'?"):
+                    return
+            
+            for obj in self.layers[index]['objects']:
+                if obj in self.objects:
+                    self.objects.remove(obj)
+            del self.layers[index]
+            if self.current_layer_index >= len(self.layers):
+                self.current_layer_index = len(self.layers) - 1
+            self.update_layer_list()
+            self.update_preview()
+            self.add_to_history("Удалён слой")
+    
+    def update_layer_list(self):
+        """Обновить список слоёв"""
+        self.layer_listbox.delete(0, tk.END)
+        for i, layer in enumerate(reversed(self.layers)):
+            visible = "👁" if layer['visible'] else "👁‍🗨"
+            name = layer['name']
+            count = len(layer['objects'])
+            self.layer_listbox.insert(tk.END, f"{visible} {name} ({count})")
+            if i == len(self.layers) - 1 - self.current_layer_index:
+                self.layer_listbox.selection_set(i)
     
     def on_layer_select(self, event):
         """Выбор слоя"""
@@ -1230,7 +1568,6 @@ class BackgroundEditorUltimate:
             self.layer_opacity_scale.set(layer['opacity'])
             self.layer_opacity_label.config(text=f"{int(layer['opacity'])}%")
             self.layer_visible_var.set(layer['visible'])
-            self.blend_mode_var.set(layer.get('blend_mode', 'normal'))
             self.selected_objects = layer['objects'].copy()
             self.update_properties_panel()
             self.update_preview()
@@ -1257,14 +1594,6 @@ class BackgroundEditorUltimate:
             self.layers[self.current_layer_index]['visible'] = self.layer_visible_var.get()
             self.update_layer_list()
             self.update_preview()
-    
-    def change_blend_mode(self, event):
-        """Изменить режим наложения"""
-        if self.current_layer_index < len(self.layers):
-            self.layers[self.current_layer_index]['blend_mode'] = self.blend_mode_var.get()
-            self.update_layer_list()
-            self.update_preview()
-            self.add_to_history("Изменён режим наложения")
     
     def layer_up(self):
         """Поднять слой"""
@@ -1315,7 +1644,6 @@ class BackgroundEditorUltimate:
         try:
             img = self.current_background.copy()
             
-            # Рендерим слои
             for layer in self.layers:
                 if not layer['visible']:
                     continue
@@ -1323,7 +1651,6 @@ class BackgroundEditorUltimate:
                 if layer_img:
                     img = Image.alpha_composite(img.convert('RGBA'), layer_img)
             
-            # Размеры холста
             canvas_width = self.canvas.winfo_width()
             canvas_height = self.canvas.winfo_height()
             
@@ -1331,7 +1658,6 @@ class BackgroundEditorUltimate:
                 canvas_width = 800
                 canvas_height = 600
             
-            # Масштабирование
             img_ratio = img.width / img.height
             canvas_ratio = canvas_width / canvas_height
             
@@ -1345,31 +1671,24 @@ class BackgroundEditorUltimate:
             display_width = int(display_width * self.zoom_level)
             display_height = int(display_height * self.zoom_level)
             
-            # Ресайз
             img_resized = img.resize((display_width, display_height), Image.Resampling.LANCZOS)
             self.photo = ImageTk.PhotoImage(img_resized)
             
-            # Центрирование
             x_offset = (canvas_width - display_width) // 2
             y_offset = (canvas_height - display_height) // 2
             
             self.canvas.create_image(x_offset, y_offset, anchor=tk.NW, image=self.photo)
             
-            # Выделение объектов
             for obj in self.selected_objects:
                 self.draw_selection(obj, x_offset, y_offset, display_width, display_height, img.width, img.height)
             
-            # Сетка
             if self.grid_visible:
                 self.draw_grid(canvas_width, canvas_height)
             
-            # Правило третей
             if self.rules_visible:
                 self.draw_rules(canvas_width, canvas_height)
             
-            # Обновление информации о размере
             self.size_label.config(text=f"{img.width}x{img.height}")
-            
             self.canvas.config(scrollregion=self.canvas.bbox("all"))
             
         except Exception as e:
@@ -1417,7 +1736,7 @@ class BackgroundEditorUltimate:
         return img
     
     def draw_selection(self, obj, x_offset, y_offset, display_width, display_height, img_width, img_height):
-        """Рисование выделения объекта"""
+        """Рисование выделения"""
         x = obj['x']
         y = obj['y']
         w = obj['width']
@@ -1435,9 +1754,9 @@ class BackgroundEditorUltimate:
         
         if self.resize_handles_var.get():
             size = 7
-            handles = [(x1, y1, 'nw'), (x2, y1, 'ne'), (x1, y2, 'sw'), (x2, y2, 'se'),
-                      ((x1+x2)/2, y1, 'n'), ((x1+x2)/2, y2, 's'), (x1, (y1+y2)/2, 'w'), (x2, (y1+y2)/2, 'e')]
-            for hx, hy, _ in handles:
+            handles = [(x1, y1), (x2, y1), (x1, y2), (x2, y2),
+                      ((x1+x2)/2, y1), ((x1+x2)/2, y2), (x1, (y1+y2)/2), (x2, (y1+y2)/2)]
+            for hx, hy in handles:
                 self.canvas.create_rectangle(hx - size//2, hy - size//2,
                                             hx + size//2, hy + size//2,
                                             fill='white', outline='cyan', width=1.5)
@@ -1466,21 +1785,14 @@ class BackgroundEditorUltimate:
             self.canvas.create_oval(px-5, py-5, px+5, py+5, fill='red', outline='red', tags="rules")
     
     def toggle_grid(self):
-        """Переключить сетку"""
         self.grid_visible = not self.grid_visible
         self.update_preview()
     
     def toggle_rules(self):
-        """Переключить правило третей"""
         self.rules_visible = not self.rules_visible
         self.update_preview()
     
-    def toggle_resize_handles(self):
-        """Переключить маркеры ресайза"""
-        self.update_preview()
-    
     def fit_to_window(self):
-        """Подогнать под окно"""
         self.zoom_level = 1.0
         self.update_preview()
     
@@ -1513,7 +1825,6 @@ class BackgroundEditorUltimate:
         self.drag_objects = []
         self.is_dragging = False
         
-        # Проверка попадания в объекты
         canvas_coords = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
         
         for obj in reversed(self.objects):
@@ -1527,7 +1838,7 @@ class BackgroundEditorUltimate:
             y2 = (y + h) * scale
             
             if x1 <= canvas_coords[0] <= x2 and y1 <= canvas_coords[1] <= y2:
-                if event.state & 0x0001:  # Shift
+                if event.state & 0x0001:
                     if obj not in self.selected_objects:
                         self.selected_objects.append(obj)
                 else:
@@ -1572,7 +1883,7 @@ class BackgroundEditorUltimate:
         self.coord_label.config(text=f"X: {int(x)} Y: {int(y)}")
     
     def on_mouse_wheel(self, event):
-        if event.state & 0x0004:  # Ctrl
+        if event.state & 0x0004:
             if event.delta > 0:
                 self.zoom_in()
             else:
@@ -1584,152 +1895,49 @@ class BackgroundEditorUltimate:
                 self.canvas.yview_scroll(1, "units")
     
     def on_double_click(self, event):
-        """Двойной клик - сброс выделения"""
         self.deselect_all()
         self.info_label.config(text="✅ Выделение снято")
     
     def on_drop(self, event):
         """Drop файлов"""
         files = self.root.tk.splitlist(event.data)
+        count = 0
         for file_path in files:
             if file_path.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp')):
-                self.add_object_from_path(file_path)
-        self.info_label.config(text=f"✅ Загружено: {len(files)}")
-    
-    def add_object_from_path(self, file_path):
-        """Добавить объект из пути"""
-        try:
-            img = Image.open(file_path)
-            obj = {
-                'image': img,
-                'x': 100 + len(self.objects) * 20,
-                'y': 100 + len(self.objects) * 20,
-                'width': img.width,
-                'height': img.height,
-                'angle': 0,
-                'opacity': 100,
-                'mirror_x': False,
-                'mirror_y': False,
-                'path': file_path,
-                'layer': self.current_layer_index
-            }
-            self.objects.append(obj)
-            if self.current_layer_index < len(self.layers):
-                self.layers[self.current_layer_index]['objects'].append(obj)
-            self.selected_objects = [obj]
-            self.update_preview()
-            self.add_to_history("Добавлен объект")
-            self.info_label.config(text=f"✅ Объект добавлен: {os.path.basename(file_path)}")
-        except Exception as e:
-            messagebox.showerror("Ошибка", str(e))
-    
-    # === ПРЕДЫДУЩИЙ/СЛЕДУЮЩИЙ ФОН ===
-    
-    def next_background(self):
-        if self.backgrounds:
-            self.current_bg_index = (self.current_bg_index + 1) % len(self.backgrounds)
-            self.current_background = self.backgrounds[self.current_bg_index].copy()
-            self.update_preview()
-    
-    def prev_background(self):
-        if self.backgrounds:
-            self.current_bg_index = (self.current_bg_index - 1) % len(self.backgrounds)
-            self.current_background = self.backgrounds[self.current_bg_index].copy()
-            self.update_preview()
-    
-    def random_background(self):
-        if self.backgrounds:
-            idx = random.randint(0, len(self.backgrounds) - 1)
-            self.current_bg_index = idx
-            self.current_background = self.backgrounds[idx].copy()
-            self.update_preview()
-            self.info_label.config(text="🎲 Случайный фон выбран")
-    
-    # === УДАЛЕНИЕ ФОНА ===
-    
-    def remove_by_color(self):
-        """Удаление фона по цвету"""
-        if not self.current_background:
-            return
+                try:
+                    img = Image.open(file_path)
+                    
+                    # Определяем, добавлять как фон или объект
+                    if not self.backgrounds and count == 0:
+                        # Если нет фона - добавляем как фон
+                        self.backgrounds.append(img)
+                        self.current_bg_index = len(self.backgrounds) - 1
+                        self.current_background = img.copy()
+                    else:
+                        # Добавляем как объект
+                        obj = {
+                            'image': img,
+                            'x': 100 + count * 20,
+                            'y': 100 + count * 20,
+                            'width': img.width,
+                            'height': img.height,
+                            'angle': 0,
+                            'opacity': 100,
+                            'mirror_x': False,
+                            'mirror_y': False,
+                            'path': file_path,
+                            'layer': self.current_layer_index
+                        }
+                        self.objects.append(obj)
+                        if self.current_layer_index < len(self.layers):
+                            self.layers[self.current_layer_index]['objects'].append(obj)
+                    count += 1
+                except:
+                    pass
         
-        color = colorchooser.askcolor()[1]
-        if color:
-            try:
-                import numpy as np
-                img = self.current_background.convert('RGBA')
-                data = np.array(img)
-                
-                target = tuple(int(color[i:i+2], 16) for i in (1, 3, 5))
-                distance = np.linalg.norm(data[:,:,:3] - target, axis=2)
-                mask = distance < 30
-                data[mask] = [0, 0, 0, 0]
-                result = Image.fromarray(data, 'RGBA')
-                
-                self.current_background = result
-                self.update_preview()
-                self.add_to_history("Удалён фон по цвету")
-                self.info_label.config(text="✅ Фон удалён по цвету")
-            except Exception as e:
-                messagebox.showerror("Ошибка", str(e))
-    
-    def remove_ai(self):
-        """ИИ удаление фона"""
-        if not self.current_background:
-            messagebox.showinfo("Информация", "Нет изображения")
-            return
-        
-        if not HAS_REMBG:
-            messagebox.showinfo("Информация", "Установите: pip install rembg onnxruntime")
-            return
-        
-        progress_dialog = tk.Toplevel(self.root)
-        progress_dialog.title("Обработка")
-        progress_dialog.geometry("300x100")
-        progress_dialog.transient(self.root)
-        
-        ttk.Label(progress_dialog, text="🤖 ИИ удаляет фон...").pack(pady=10)
-        progress_bar = ttk.Progressbar(progress_dialog, orient=tk.HORIZONTAL, 
-                                      length=250, mode='indeterminate')
-        progress_bar.pack(pady=10)
-        progress_bar.start()
-        
-        def process():
-            try:
-                from rembg import remove
-                result = remove(self.current_background)
-                self.root.after(0, lambda: self.finish_ai_remove(progress_dialog, result))
-            except Exception as e:
-                self.root.after(0, lambda: self.handle_ai_error(progress_dialog, str(e)))
-        
-        threading.Thread(target=process, daemon=True).start()
-    
-    def finish_ai_remove(self, dialog, result):
-        dialog.destroy()
-        self.current_background = result
         self.update_preview()
-        self.add_to_history("ИИ удаление фона")
-        self.info_label.config(text="✅ ИИ удалил фон")
-    
-    def handle_ai_error(self, dialog, error):
-        dialog.destroy()
-        messagebox.showerror("Ошибка", f"Не удалось удалить фон:\n{error}")
-    
-    def remove_edges(self):
-        """Обрезка краёв"""
-        if not self.current_background:
-            return
-        
-        try:
-            img = self.current_background.convert('RGBA')
-            bbox = img.getbbox()
-            if bbox:
-                cropped = img.crop(bbox)
-                self.current_background = cropped
-                self.update_preview()
-                self.add_to_history("Обрезка краёв")
-                self.info_label.config(text="✅ Края обрезаны")
-        except Exception as e:
-            messagebox.showerror("Ошибка", str(e))
+        self.add_to_history(f"Добавлено файлов: {count}")
+        self.info_label.config(text=f"✅ Загружено: {count} файлов")
     
     # === ФИЛЬТРЫ ===
     
@@ -1749,9 +1957,6 @@ class BackgroundEditorUltimate:
                 img = img.filter(ImageFilter.SHARPEN)
             elif filter_type == 'emboss':
                 img = img.filter(ImageFilter.EMBOSS)
-            elif filter_type == 'edge_blur':
-                img = img.filter(ImageFilter.EDGE_ENHANCE)
-                img = img.filter(ImageFilter.GaussianBlur(radius=1))
             
             obj['image'] = img
             obj['width'], obj['height'] = img.size
@@ -1851,48 +2056,114 @@ class BackgroundEditorUltimate:
         
         return img
     
-    def apply_auto(self, filter_type):
+    # === УДАЛЕНИЕ ФОНА ===
+    
+    def remove_by_color(self):
+        if not self.current_background:
+            return
+        
+        color = colorchooser.askcolor()[1]
+        if color:
+            try:
+                import numpy as np
+                img = self.current_background.convert('RGBA')
+                data = np.array(img)
+                
+                target = tuple(int(color[i:i+2], 16) for i in (1, 3, 5))
+                distance = np.linalg.norm(data[:,:,:3] - target, axis=2)
+                mask = distance < 30
+                data[mask] = [0, 0, 0, 0]
+                result = Image.fromarray(data, 'RGBA')
+                
+                self.current_background = result
+                self.update_preview()
+                self.add_to_history("Удалён фон по цвету")
+                self.info_label.config(text="✅ Фон удалён по цвету")
+            except Exception as e:
+                messagebox.showerror("Ошибка", str(e))
+    
+    def remove_ai(self):
+        if not self.current_background:
+            messagebox.showinfo("Информация", "Нет изображения")
+            return
+        
+        if not HAS_REMBG:
+            messagebox.showinfo("Информация", "Установите: pip install rembg onnxruntime")
+            return
+        
+        progress_dialog = tk.Toplevel(self.root)
+        progress_dialog.title("Обработка")
+        progress_dialog.geometry("300x100")
+        progress_dialog.transient(self.root)
+        
+        ttk.Label(progress_dialog, text="🤖 ИИ удаляет фон...").pack(pady=10)
+        progress_bar = ttk.Progressbar(progress_dialog, orient=tk.HORIZONTAL, 
+                                      length=250, mode='indeterminate')
+        progress_bar.pack(pady=10)
+        progress_bar.start()
+        
+        def process():
+            try:
+                from rembg import remove
+                result = remove(self.current_background)
+                self.root.after(0, lambda: self.finish_ai_remove(progress_dialog, result))
+            except Exception as e:
+                self.root.after(0, lambda: self.handle_ai_error(progress_dialog, str(e)))
+        
+        threading.Thread(target=process, daemon=True).start()
+    
+    def finish_ai_remove(self, dialog, result):
+        dialog.destroy()
+        self.current_background = result
+        self.update_preview()
+        self.add_to_history("ИИ удаление фона")
+        self.info_label.config(text="✅ ИИ удалил фон")
+    
+    def handle_ai_error(self, dialog, error):
+        dialog.destroy()
+        messagebox.showerror("Ошибка", f"Не удалось удалить фон:\n{error}")
+    
+    def remove_edges(self):
+        if not self.current_background:
+            return
+        
+        try:
+            img = self.current_background.convert('RGBA')
+            bbox = img.getbbox()
+            if bbox:
+                cropped = img.crop(bbox)
+                self.current_background = cropped
+                self.update_preview()
+                self.add_to_history("Обрезка краёв")
+                self.info_label.config(text="✅ Края обрезаны")
+        except Exception as e:
+            messagebox.showerror("Ошибка", str(e))
+    
+    # === РАЗМЕР И ФОРМАТЫ ===
+    
+    def apply_format(self, ratio):
+        """Применить формат (4:3, 16:9 и т.д.)"""
         if not self.selected_objects:
+            messagebox.showinfo("Информация", "Выберите объекты")
             return
         
         for obj in self.selected_objects:
-            img = obj['image'].copy()
+            current_ratio = obj['width'] / obj['height']
             
-            if filter_type == 'autocontrast':
-                img = ImageOps.autocontrast(img)
-            elif filter_type == 'white_balance':
-                img = self.apply_white_balance(img)
-            elif filter_type == 'detail_enhance' and HAS_CV2:
-                import cv2
-                import numpy as np
-                arr = np.array(img)
-                enhanced = cv2.detailEnhance(arr, sigma_s=10, sigma_r=0.15)
-                img = Image.fromarray(enhanced)
-            elif filter_type == 'denoise' and HAS_CV2:
-                import cv2
-                import numpy as np
-                arr = np.array(img)
-                denoised = cv2.fastNlMeansDenoisingColored(arr, None, 10, 10, 7, 21)
-                img = Image.fromarray(denoised)
+            if current_ratio > ratio:
+                new_width = int(obj['height'] * ratio)
+                new_height = obj['height']
+            else:
+                new_width = obj['width']
+                new_height = int(obj['width'] / ratio)
             
-            obj['image'] = img
-            obj['width'], obj['height'] = img.size
+            obj['width'] = new_width
+            obj['height'] = new_height
+            obj['image'] = obj['image'].resize((new_width, new_height), Image.Resampling.LANCZOS)
         
         self.update_preview()
-        self.add_to_history(f"Автофильтр: {filter_type}")
-        self.info_label.config(text=f"✅ Автофильтр применён")
-    
-    def apply_white_balance(self, img):
-        img = img.convert('RGB')
-        r, g, b = img.split()
-        r_mean = r.getextrema()[1]
-        g_mean = g.getextrema()[1]
-        b_mean = b.getextrema()[1]
-        avg = (r_mean + g_mean + b_mean) / 3
-        r = r.point(lambda i: min(255, int(i * avg / r_mean)) if r_mean > 0 else i)
-        g = g.point(lambda i: min(255, int(i * avg / g_mean)) if g_mean > 0 else i)
-        b = b.point(lambda i: min(255, int(i * avg / b_mean)) if b_mean > 0 else i)
-        return Image.merge('RGB', (r, g, b)).convert('RGBA')
+        self.add_to_history(f"Применён формат: {ratio:.2f}")
+        self.info_label.config(text=f"✅ Формат применён")
     
     # === ПРЕСЕТЫ ===
     
@@ -1951,11 +2222,6 @@ class BackgroundEditorUltimate:
             self.apply_correction()
             self.info_label.config(text="✅ Пресет: Soft Glow")
     
-    def preset_film_grain(self):
-        if self.selected_objects:
-            self.apply_filter('gaussian_blur', 0.3)
-            self.info_label.config(text="✅ Пресет: Film Grain")
-    
     def save_custom_preset(self):
         name = self.custom_preset_entry.get()
         if not name:
@@ -1986,6 +2252,11 @@ class BackgroundEditorUltimate:
                 self.update_custom_preset_list()
                 self.info_label.config(text=f"✅ Пресет удалён: {name}")
     
+    def update_custom_preset_list(self):
+        self.custom_preset_list.delete(0, tk.END)
+        for name in self.custom_presets.keys():
+            self.custom_preset_list.insert(tk.END, name)
+    
     # === ОБЪЕКТЫ ===
     
     def select_all(self):
@@ -1998,30 +2269,6 @@ class BackgroundEditorUltimate:
         self.selected_objects = []
         self.update_preview()
         self.info_label.config(text="✅ Выделение снято")
-    
-    def select_next_object(self):
-        if not self.objects:
-            return
-        if self.selected_objects:
-            idx = self.objects.index(self.selected_objects[-1])
-            idx = (idx + 1) % len(self.objects)
-        else:
-            idx = 0
-        self.selected_objects = [self.objects[idx]]
-        self.update_preview()
-        self.update_properties_panel()
-    
-    def select_prev_object(self):
-        if not self.objects:
-            return
-        if self.selected_objects:
-            idx = self.objects.index(self.selected_objects[0])
-            idx = (idx - 1) % len(self.objects)
-        else:
-            idx = len(self.objects) - 1
-        self.selected_objects = [self.objects[idx]]
-        self.update_preview()
-        self.update_properties_panel()
     
     def duplicate_objects(self):
         if not self.selected_objects:
@@ -2045,18 +2292,21 @@ class BackgroundEditorUltimate:
     def delete_objects(self):
         if not self.selected_objects:
             return
-        if messagebox.askyesno("Удаление", f"Удалить {len(self.selected_objects)} объектов?"):
-            for obj in self.selected_objects:
-                if obj in self.objects:
-                    self.objects.remove(obj)
-                    layer_idx = obj.get('layer', 0)
-                    if layer_idx < len(self.layers) and obj in self.layers[layer_idx]['objects']:
-                        self.layers[layer_idx]['objects'].remove(obj)
-            self.selected_objects = []
-            self.update_preview()
-            self.add_to_history("Удаление объектов")
-            self.update_layer_list()
-            self.info_label.config(text="✅ Объекты удалены")
+        if self.config.get('confirm_delete', True):
+            if not messagebox.askyesno("Удаление", f"Удалить {len(self.selected_objects)} объектов?"):
+                return
+        
+        for obj in self.selected_objects:
+            if obj in self.objects:
+                self.objects.remove(obj)
+                layer_idx = obj.get('layer', 0)
+                if layer_idx < len(self.layers) and obj in self.layers[layer_idx]['objects']:
+                    self.layers[layer_idx]['objects'].remove(obj)
+        self.selected_objects = []
+        self.update_preview()
+        self.add_to_history("Удаление объектов")
+        self.update_layer_list()
+        self.info_label.config(text="✅ Объекты удалены")
     
     def align_objects(self):
         if len(self.selected_objects) < 2:
@@ -2220,6 +2470,63 @@ class BackgroundEditorUltimate:
     
     # === ИСТОРИЯ ===
     
+    def add_to_history(self, action_name):
+        state = self.get_current_state()
+        
+        self.history = self.history[:self.history_index + 1]
+        
+        snapshot = {
+            'name': action_name,
+            'time': datetime.now().isoformat(),
+            'state': state
+        }
+        
+        self.history.append(snapshot)
+        self.history_index += 1
+        
+        if len(self.history) > self.max_history:
+            self.history.pop(0)
+            self.history_index -= 1
+        
+        self.update_history_list()
+        self.history_count_label.config(text=f"{len(self.history)}")
+    
+    def get_current_state(self):
+        return {
+            'objects': copy.deepcopy(self.objects),
+            'layers': copy.deepcopy(self.layers),
+            'background': self.current_background.copy() if self.current_background else None,
+            'selected': [self.objects.index(obj) for obj in self.selected_objects if obj in self.objects]
+        }
+    
+    def restore_state(self, state):
+        self.objects = copy.deepcopy(state['objects'])
+        self.layers = copy.deepcopy(state['layers'])
+        if state['background']:
+            self.current_background = state['background'].copy()
+        self.selected_objects = [self.objects[i] for i in state['selected'] if i < len(self.objects)]
+        
+        self.update_layer_list()
+        self.update_preview()
+        self.update_properties_panel()
+    
+    def update_history_list(self):
+        self.history_listbox.delete(0, tk.END)
+        for i, item in enumerate(self.history):
+            prefix = "▶ " if i == self.history_index else "  "
+            self.history_listbox.insert(tk.END, f"{prefix}{item['name']}")
+            if i == self.history_index:
+                self.history_listbox.selection_set(i)
+    
+    def on_history_select(self, event):
+        selected = self.history_listbox.curselection()
+        if selected:
+            index = selected[0]
+            if index != self.history_index and index < len(self.history):
+                self.history_index = index
+                self.restore_state(self.history[index]['state'])
+                self.update_history_list()
+    
     def undo(self):
         if self.history_index > 0:
             self.history_index -= 1
@@ -2245,15 +2552,6 @@ class BackgroundEditorUltimate:
     def take_snapshot(self):
         self.add_to_history(f"📸 Снимок {len(self.history) + 1}")
         self.info_label.config(text="✅ Снимок создан")
-    
-    def on_history_select(self, event):
-        selected = self.history_listbox.curselection()
-        if selected:
-            index = selected[0]
-            if index != self.history_index and index < len(self.history):
-                self.history_index = index
-                self.restore_state(self.history[index]['state'])
-                self.update_history_list()
     
     # === ПАКЕТНАЯ ОБРАБОТКА ===
     
@@ -2287,9 +2585,6 @@ class BackgroundEditorUltimate:
                 self.update_template_list()
                 self.info_label.config(text=f"✅ Шаблон удалён: {name}")
     
-    def on_template_select(self, event):
-        pass
-    
     def update_template_list(self):
         self.template_listbox.delete(0, tk.END)
         for name in self.batch_templates.keys():
@@ -2310,16 +2605,14 @@ class BackgroundEditorUltimate:
         dialog.transient(self.root)
         
         ttk.Label(dialog, text="Тип операции:").pack(pady=5)
-        op_types = [
-            'gaussian_blur', 'sharpen', 'grayscale', 'sepia', 
-            'brightness', 'contrast', 'resize', 'rotate', 'invert'
-        ]
+        op_types = ['gaussian_blur', 'sharpen', 'grayscale', 'sepia', 
+                   'brightness', 'contrast', 'resize', 'rotate', 'invert']
         op_var = tk.StringVar()
         op_combo = ttk.Combobox(dialog, textvariable=op_var, 
                                values=op_types, state='readonly')
         op_combo.pack(pady=5)
         
-        ttk.Label(dialog, text="Значение (опционально):").pack(pady=5)
+        ttk.Label(dialog, text="Значение:").pack(pady=5)
         value_entry = ttk.Entry(dialog)
         value_entry.pack(pady=5)
         
@@ -2532,44 +2825,6 @@ class BackgroundEditorUltimate:
         else:
             self.analysis_text.insert(tk.END, "✅ Высокое разрешение\n")
     
-    def compare_images(self):
-        if not self.current_background:
-            return
-        
-        file_path = filedialog.askopenfilename(
-            filetypes=[("Изображения", "*.png *.jpg *.jpeg *.bmp *.gif")]
-        )
-        if file_path:
-            try:
-                img2 = Image.open(file_path)
-                self.analysis_text.delete(1.0, tk.END)
-                self.analysis_text.insert(tk.END, "🧬 СРАВНЕНИЕ\n")
-                self.analysis_text.insert(tk.END, "=" * 30 + "\n\n")
-                
-                img1 = self.current_background
-                self.analysis_text.insert(tk.END, f"Изображение 1: {img1.width}x{img1.height}\n")
-                self.analysis_text.insert(tk.END, f"Изображение 2: {img2.width}x{img2.height}\n\n")
-                
-                if HAS_SKIMAGE:
-                    from skimage.metrics import structural_similarity as ssim
-                    import numpy as np
-                    
-                    i1 = np.array(img1.resize((256, 256)).convert('L'))
-                    i2 = np.array(img2.resize((256, 256)).convert('L'))
-                    similarity = ssim(i1, i2)
-                    
-                    self.analysis_text.insert(tk.END, f"Сходство (SSIM): {similarity:.4f}\n")
-                    if similarity > 0.9:
-                        self.analysis_text.insert(tk.END, "✅ Изображения очень похожи\n")
-                    elif similarity > 0.7:
-                        self.analysis_text.insert(tk.END, "⚠️ Умеренное сходство\n")
-                    else:
-                        self.analysis_text.insert(tk.END, "❌ Сильно отличаются\n")
-                else:
-                    self.analysis_text.insert(tk.END, "⚠️ Установите scikit-image")
-            except Exception as e:
-                messagebox.showerror("Ошибка", str(e))
-    
     # === ЭКСПОРТ ===
     
     def export_dialog(self):
@@ -2579,7 +2834,7 @@ class BackgroundEditorUltimate:
         
         dialog = tk.Toplevel(self.root)
         dialog.title("📤 Экспорт")
-        dialog.geometry("350x280")
+        dialog.geometry("350x320")
         dialog.transient(self.root)
         
         ttk.Label(dialog, text="Формат:").pack(pady=5)
@@ -2599,42 +2854,65 @@ class BackgroundEditorUltimate:
             quality_label.config(text=f"{int(float(val))}%")
         quality_scale.configure(command=update_quality)
         
+        # ZIP опция
+        zip_var = tk.BooleanVar(value=self.export_as_zip)
+        ttk.Checkbutton(dialog, text=self.get_text('save_as_zip'), 
+                       variable=zip_var,
+                       command=lambda: setattr(self, 'export_as_zip', zip_var.get())).pack(anchor=tk.W, padx=10, pady=5)
+        
         def do_export():
             file_path = filedialog.asksaveasfilename(
                 defaultextension=f".{format_var.get().lower()}",
                 filetypes=[(format_var.get(), f"*.{format_var.get().lower()}")]
             )
             if file_path:
-                self.export_image(file_path, format_var.get(), int(quality_scale.get()))
+                self.export_image(file_path, format_var.get(), int(quality_scale.get()), zip_var.get())
                 dialog.destroy()
         
         ttk.Button(dialog, text="📤 Экспортировать", command=do_export).pack(pady=10)
         ttk.Button(dialog, text="Отмена", command=dialog.destroy).pack(pady=5)
     
-    def export_image(self, file_path, format_type='PNG', quality=90):
+    def export_image(self, file_path, format_type='PNG', quality=90, as_zip=False):
         try:
+            # Рендерим финальное изображение
             img = self.render_final_image()
             
-            if format_type == 'PNG':
-                img.save(file_path, 'PNG')
-            elif format_type == 'JPG':
-                img.convert('RGB').save(file_path, 'JPEG', quality=quality)
-            elif format_type == 'BMP':
-                img.save(file_path, 'BMP')
-            elif format_type == 'WEBP':
-                img.save(file_path, 'WEBP', quality=quality)
-            elif format_type == 'PDF':
-                img.save(file_path, 'PDF')
-            elif format_type == 'PSD':
-                self.export_psd(file_path)
-            elif format_type == 'SVG' and HAS_SVG:
-                self.export_svg(file_path)
-            
-            self.info_label.config(text=f"✅ Экспортировано: {os.path.basename(file_path)}")
+            if as_zip:
+                # Сохраняем как ZIP
+                zip_path = file_path + '.zip'
+                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                    temp_path = file_path + '.temp.' + format_type.lower()
+                    self.save_image(img, temp_path, format_type, quality)
+                    zipf.write(temp_path, os.path.basename(file_path))
+                    os.remove(temp_path)
+                self.info_label.config(text=f"✅ Экспортировано в ZIP: {os.path.basename(zip_path)}")
+            else:
+                # Сохраняем как обычный файл
+                self.save_image(img, file_path, format_type, quality)
+                self.info_label.config(text=f"✅ Экспортировано: {os.path.basename(file_path)}")
+                
         except Exception as e:
             messagebox.showerror("Ошибка", str(e))
     
+    def save_image(self, img, file_path, format_type, quality):
+        """Сохранение изображения в указанном формате"""
+        if format_type == 'PNG':
+            img.save(file_path, 'PNG')
+        elif format_type == 'JPG':
+            img.convert('RGB').save(file_path, 'JPEG', quality=quality)
+        elif format_type == 'BMP':
+            img.save(file_path, 'BMP')
+        elif format_type == 'WEBP':
+            img.save(file_path, 'WEBP', quality=quality)
+        elif format_type == 'PDF':
+            img.save(file_path, 'PDF')
+        elif format_type == 'PSD':
+            self.export_psd(file_path)
+        elif format_type == 'SVG' and HAS_SVG:
+            self.export_svg(file_path)
+    
     def render_final_image(self):
+        """Рендеринг финального изображения (фон + все объекты)"""
         if not self.current_background:
             return None
         
@@ -2668,12 +2946,12 @@ class BackgroundEditorUltimate:
             
             psd.save(file_path)
         except ImportError:
-            self.export_image(file_path, 'PNG')
+            self.save_image(self.render_final_image(), file_path, 'PNG', 90)
     
     def export_svg(self, file_path):
         if HAS_SVG:
             temp_png = file_path + ".temp.png"
-            self.export_image(temp_png, 'PNG')
+            self.save_image(self.render_final_image(), temp_png, 'PNG', 90)
             cairosvg.png2svg(url=temp_png, write_to=file_path)
             os.remove(temp_png)
     
@@ -2729,14 +3007,12 @@ class BackgroundEditorUltimate:
             if not os.path.exists(data_folder):
                 os.makedirs(data_folder)
             
-            # Сохраняем фоны
             bg_paths = []
             for i, bg in enumerate(self.backgrounds):
                 bg_path = os.path.join(data_folder, f"bg_{i}.png")
                 bg.save(bg_path)
                 bg_paths.append(os.path.join(name, f"bg_{i}.png"))
             
-            # Сохраняем объекты
             obj_data = []
             for i, obj in enumerate(self.objects):
                 obj_path = os.path.join(data_folder, f"obj_{i}.png")
@@ -2751,14 +3027,12 @@ class BackgroundEditorUltimate:
                     'layer': obj.get('layer', 0)
                 })
             
-            # Сохраняем слои
             layers_data = []
             for layer in self.layers:
                 layers_data.append({
                     'name': layer['name'],
                     'visible': layer['visible'],
                     'opacity': layer['opacity'],
-                    'blend_mode': layer.get('blend_mode', 'normal'),
                     'object_indices': [self.objects.index(obj) for obj in layer['objects'] if obj in self.objects]
                 })
             
@@ -2795,7 +3069,6 @@ class BackgroundEditorUltimate:
             
             folder = os.path.dirname(path)
             
-            # Загружаем фоны
             self.backgrounds = []
             for bg_path in data['backgrounds']:
                 abs_path = os.path.join(folder, bg_path)
@@ -2806,7 +3079,6 @@ class BackgroundEditorUltimate:
             if self.backgrounds:
                 self.current_background = self.backgrounds[self.current_bg_index].copy()
             
-            # Загружаем объекты
             self.objects = []
             for obj_data in data['objects']:
                 abs_path = os.path.join(folder, obj_data['path'])
@@ -2823,14 +3095,12 @@ class BackgroundEditorUltimate:
                     }
                     self.objects.append(obj)
             
-            # Загружаем слои
             self.layers = []
             for layer_data in data.get('layers', []):
                 layer = {
                     'name': layer_data['name'],
                     'visible': layer_data['visible'],
                     'opacity': layer_data['opacity'],
-                    'blend_mode': layer_data.get('blend_mode', 'normal'),
                     'objects': []
                 }
                 for idx in layer_data.get('object_indices', []):
@@ -2862,6 +3132,32 @@ class BackgroundEditorUltimate:
         if file_path:
             self.add_object_from_path(file_path)
     
+    def add_object_from_path(self, file_path):
+        try:
+            img = Image.open(file_path)
+            obj = {
+                'image': img,
+                'x': 100 + len(self.objects) * 20,
+                'y': 100 + len(self.objects) * 20,
+                'width': img.width,
+                'height': img.height,
+                'angle': 0,
+                'opacity': 100,
+                'mirror_x': False,
+                'mirror_y': False,
+                'path': file_path,
+                'layer': self.current_layer_index
+            }
+            self.objects.append(obj)
+            if self.current_layer_index < len(self.layers):
+                self.layers[self.current_layer_index]['objects'].append(obj)
+            self.selected_objects = [obj]
+            self.update_preview()
+            self.add_to_history("Добавлен объект")
+            self.info_label.config(text=f"✅ Объект добавлен: {os.path.basename(file_path)}")
+        except Exception as e:
+            messagebox.showerror("Ошибка", str(e))
+    
     def reset(self):
         if messagebox.askyesno("Сброс", "Сбросить все изменения?"):
             self.objects = []
@@ -2876,6 +3172,44 @@ class BackgroundEditorUltimate:
             self.update_history_list()
             self.update_preview()
             self.info_label.config(text="✅ Сброс выполнен")
+    
+    # === ПРЕДЫДУЩИЙ/СЛЕДУЮЩИЙ ФОН ===
+    
+    def next_background(self):
+        if self.backgrounds:
+            self.current_bg_index = (self.current_bg_index + 1) % len(self.backgrounds)
+            self.current_background = self.backgrounds[self.current_bg_index].copy()
+            self.update_preview()
+    
+    def prev_background(self):
+        if self.backgrounds:
+            self.current_bg_index = (self.current_bg_index - 1) % len(self.backgrounds)
+            self.current_background = self.backgrounds[self.current_bg_index].copy()
+            self.update_preview()
+    
+    def random_background(self):
+        if self.backgrounds:
+            idx = random.randint(0, len(self.backgrounds) - 1)
+            self.current_bg_index = idx
+            self.current_background = self.backgrounds[idx].copy()
+            self.update_preview()
+            self.info_label.config(text="🎲 Случайный фон выбран")
+    
+    def update_properties_panel(self):
+        if self.selected_objects:
+            obj = self.selected_objects[0]
+            self.x_entry.delete(0, tk.END)
+            self.x_entry.insert(0, str(int(obj['x'])))
+            self.y_entry.delete(0, tk.END)
+            self.y_entry.insert(0, str(int(obj['y'])))
+            self.width_entry.delete(0, tk.END)
+            self.width_entry.insert(0, str(obj['width']))
+            self.height_entry.delete(0, tk.END)
+            self.height_entry.insert(0, str(obj['height']))
+            self.angle_scale.set(obj['angle'])
+            self.angle_label.config(text=f"{int(obj['angle'])}°")
+            self.opacity_scale.set(obj['opacity'])
+            self.opacity_label.config(text=f"{int(obj['opacity'])}%")
     
     # === АВТОСОХРАНЕНИЕ ===
     
@@ -2895,7 +3229,63 @@ class BackgroundEditorUltimate:
             self.save_project_to_path(temp_path)
             self.info_label.config(text="💾 Автосохранение")
     
-    # === ПОСЛЕДНИЕ ПРОЕКТЫ ===
+    # === ОБНОВЛЕНИЯ ===
+    
+    def check_updates_auto(self):
+        if not self.config.get('check_updates', True):
+            return
+        
+        try:
+            has_update, version, url = self.updater.check_for_updates()
+            if has_update:
+                if messagebox.askyesno("🔄 Обновление", 
+                    f"Доступна новая версия {version}!\n\n"
+                    f"Текущая: {self.version}\n"
+                    f"Новая: {version}\n\n"
+                    "Скачать обновление?"):
+                    self.download_update(url)
+        except:
+            pass
+    
+    def check_updates_manual(self):
+        self.info_label.config(text="🔄 Проверка обновлений...")
+        
+        def check():
+            try:
+                has_update, version, url = self.updater.check_for_updates()
+                if has_update:
+                    self.root.after(0, lambda: messagebox.askyesno("🔄 Обновление",
+                        f"Доступна новая версия {version}!\n\nОбновить?"))
+                    self.root.after(0, lambda: self.info_label.config(text="✅ Обновление доступно!"))
+                else:
+                    self.root.after(0, lambda: self.info_label.config(text="✅ Обновлений нет"))
+            except Exception as e:
+                self.root.after(0, lambda: self.info_label.config(text=f"⚠️ {str(e)}"))
+        
+        threading.Thread(target=check, daemon=True).start()
+    
+    def download_update(self, url):
+        self.info_label.config(text="📥 Скачивание...")
+        
+        def download():
+            new_exe, error = self.updater.download_update(url)
+            if new_exe:
+                self.root.after(0, lambda: self.apply_update(new_exe))
+            else:
+                self.root.after(0, lambda: messagebox.showerror("Ошибка", error))
+                self.root.after(0, lambda: self.info_label.config(text="⚠️ Ошибка скачивания"))
+        
+        threading.Thread(target=download, daemon=True).start()
+    
+    def apply_update(self, new_exe):
+        success, msg = self.updater.apply_update(new_exe)
+        if success:
+            messagebox.showinfo("✅ Обновление", "Программа перезапустится")
+            self.root.quit()
+        else:
+            messagebox.showerror("Ошибка", msg)
+    
+    # === ЗАГРУЗКА ПОСЛЕДНИХ ПРОЕКТОВ ===
     
     def load_recent_projects(self):
         try:
@@ -2911,7 +3301,7 @@ class BackgroundEditorUltimate:
     # === О ПРОГРАММЕ ===
     
     def show_about(self):
-        about = f"""🎨 Редактор Фона Ultimate v{self.version}
+        about = f"""🎨 {self.program_name} v{self.version}
 
 ✨ Возможности:
 • 📚 Слои и объекты
@@ -2922,6 +3312,10 @@ class BackgroundEditorUltimate:
 • ⏳ История действий
 • 💾 Автосохранение
 • 🔄 Автообновление
+• 🎨 Стили Windows (XP/Vista/7/8/10/11)
+• 📐 Популярные форматы (4:3, 16:9, 1:1 и др.)
+• 📦 Пакетное добавление объектов
+• 💾 Экспорт в ZIP
 
 📦 Библиотеки:
 • Pillow - работа с изображениями
@@ -2940,7 +3334,7 @@ class BackgroundEditorUltimate:
 
 🚀 БЫСТРЫЙ СТАРТ:
 1. Добавьте фон (📁 Добавить фон)
-2. Добавьте объекты (➕ Добавить объект)  
+2. Добавьте объекты (➕ Добавить объекты или пакетно)
 3. Работайте со слоями (📚 Слои)
 4. Применяйте фильтры (🎨 Фильтры)
 5. Сохраните результат (📤 Экспорт)
@@ -2962,7 +3356,16 @@ Ctrl+ - - Уменьшить
 • Используйте слои для неразрушающего редактирования
 • Применяйте ИИ для быстрого удаления фона
 • Сохраняйте пресеты для частых эффектов
-• Включайте автосохранение в настройках"""
+• Используйте пакетное добавление для нескольких файлов
+• При экспорте можно сохранить в ZIP
+
+🎨 СТИЛИ WINDOWS:
+• Windows XP - классический стиль
+• Windows Vista - прозрачный стиль
+• Windows 7 - аэро-стиль
+• Windows 8 - плоский стиль
+• Windows 10 - современный стиль
+• Windows 11 - округлый стиль"""
         messagebox.showinfo("Справка", help_text)
     
     def show_hotkeys(self):
@@ -2989,16 +3392,17 @@ Delete - Удалить
 👁 Вид:
 Ctrl++ - Увеличить
 Ctrl+- - Уменьшить
-Tab - Следующий объект
-Shift+Tab - Предыдущий объект
 
 📚 Слои:
-F2 - Переименовать слой"""
+F2 - Переименовать слой
+
+📦 Пакетная:
+Выделите несколько объектов и примените действие"""
         messagebox.showinfo("Горячие клавиши", hotkeys)
 
 
 # === ЗАПУСК ===
 if __name__ == "__main__":
     root = tk.Tk()
-    app = BackgroundEditorUltimate(root)
+    app = BackgroundEditor(root)
     root.mainloop()
